@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">寅子鱼吧爬取</string>
+    <string name="settings">设置</string>
+    <string name="group_id_hint">鱼吧 group_id（寅子=561）</string>
+    <string name="cookie_hint">登录 Cookie（从浏览器复制）</string>
+    <string name="save">保存</string>
+    <string name="cancel">取消</string>
+    <string name="refresh">刷新</string>
+    <string name="load_more">加载更多</string>
+    <string name="download_all">下载本页</string>
+    <string name="loading">加载中…</string>
+    <string name="empty">没有数据</string>
+    <string name="error_network">网络错误：%1$s</string>
+    <string name="download_done">已保存到相册：%1$s</string>
+    <string name="download_failed">下载失败：%1$s</string>
+    <string name="no_cookie_warning">未设置 Cookie，部分内容可能抓取不到，建议先到设置里粘贴 Cookie</string>
+    <string name="images_count">%1$d 图</string>
+    <string name="videos_count">%1$d 视频</string>
+    <string name="permission_denied">没有存储权限，无法保存文件</string>
+    <string name="notification_channel_download">下载通知</string>
+    <string name="download_running">正在下载…</string>
+</resources>

@@ -1,0 +1,135 @@
+package com.yinzi.crawler.download
+
+import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import com.yinzi.crawler.App
+import com.yinzi.crawler.model.MediaItem
+import com.yinzi.crawler.network.Net
+import com.yinzi.crawler.util.Prefs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import okhttp3.Request
+import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStream
+
+/**
+ * 下载结果
+ */
+sealed class DownloadResult {
+    data class Success(val uri: Uri, val path: String) : DownloadResult()
+    data class Failure(val error: String) : DownloadResult()
+}
+
+data class DownloadProgress(val url: String, val percent: Int)
+
+/**
+ * 简易下载器：
+ * - 图片存到 MediaStore.Images，视频存到 MediaStore.Video
+ * - Android 10+ 用 MediaStore，旧版本直接写公共目录
+ */
+object DownloadManager {
+
+    private val _progress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val progress: StateFlow<Map<String, Int>> = _progress.asStateFlow()
+
+    suspend fun download(item: MediaItem): DownloadResult = withContext(Dispatchers.IO) {
+        try {
+            if (Prefs.isDownloaded(item.url)) {
+                // 已下载过，简单跳过
+                return@withContext DownloadResult.Success(Uri.EMPTY, "already downloaded")
+            }
+            _progress.value = _progress.value + (item.url to 0)
+
+            val req = Request.Builder().url(item.url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Mobile")
+                .header("Referer", "https://yuba.douyu.com/")
+                .build()
+            val resp = Net.okHttp.newCall(req).execute()
+            if (!resp.isSuccessful) {
+                _progress.value = _progress.value - item.url
+                return@withContext DownloadResult.Failure("HTTP ${resp.code}")
+            }
+            val body = resp.body ?: return@withContext DownloadResult.Failure("empty body")
+            val total = body.contentLength().takeIf { it > 0 } ?: -1L
+            val displayName = fileName(item)
+            val mime = if (item.isVideo) "video/mp4" else "image/jpeg"
+
+            val sink: OutputStream
+            val savedUri: Uri
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val cv = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    val sub = if (item.isVideo) "YinziCrawler/Videos" else "YinziCrawler/Images"
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${if (item.isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES}/$sub")
+                }
+                val resolver = App.instance.contentResolver
+                val collection = if (item.isVideo)
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                else
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                val uri = resolver.insert(collection, cv)
+                    ?: return@withContext DownloadResult.Failure("MediaStore insert null")
+                sink = resolver.openOutputStream(uri)
+                    ?: return@withContext DownloadResult.Failure("openOutputStream null")
+                savedUri = uri
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = if (item.isVideo)
+                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "YinziCrawler")
+                else
+                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "YinziCrawler")
+                if (!dir.exists()) dir.mkdirs()
+                val file = File(dir, displayName)
+                sink = FileOutputStream(file)
+                savedUri = Uri.fromFile(file)
+            }
+
+            sink.use { out ->
+                val source = body.source()
+                val buf = ByteArray(16 * 1024)
+                var read: Int
+                var done = 0L
+                while (true) {
+                    read = source.read(buf)
+                    if (read == -1) break
+                    out.write(buf, 0, read)
+                    done += read
+                    if (total > 0) {
+                        val p = (done * 100 / total).toInt().coerceIn(0, 100)
+                        _progress.value = _progress.value + (item.url to p)
+                    }
+                }
+                out.flush()
+            }
+            _progress.value = _progress.value + (item.url to 100)
+            Prefs.markDownloaded(item.url)
+            _progress.value = _progress.value - item.url
+            DownloadResult.Success(savedUri, displayName)
+        } catch (e: Exception) {
+            _progress.value = _progress.value - item.url
+            DownloadResult.Failure(e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    private fun fileName(item: MediaItem): String {
+        // 从 URL 取扩展名，没有就默认
+        val ext = when {
+            item.isVideo -> ".mp4"
+            item.url.lowercase().let { e ->
+                listOf(".jpg", ".jpeg", ".png", ".webp", ".gif").any { e.contains(it) }
+            } -> ""
+            else -> ".jpg"
+        }
+        val base = "yinzi_${System.currentTimeMillis()}_${item.url.hashCode().toString().replace("-", "0")}"
+        return base + ext
+    }
+}

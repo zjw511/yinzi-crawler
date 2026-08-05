@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/group_id_hint"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp" />
+
+    <EditText
+        android:id="@+id/etGroupId"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="number"
+        android:hint="561"
+        android:layout_marginTop="4dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/cookie_hint"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp" />
+
+    <EditText
+        android:id="@+id/etCookie"
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:gravity="top|start"
+        android:hint="acf_did=...; dy_auth=...; ..."
+        android:inputType="textMultiLine|textNoSuggestions"
+        android:textSize="12sp"
+        android:scrollbars="vertical"
+        android:layout_marginTop="4dp" />
+
+    <TextView
+        android:id="@+id/tvCookieTip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Cookie 仅保存在本机，不会上传。建议从浏览器登录斗鱼鱼吧后复制请求头里的 Cookie。"
+        android:textColor="@color/text_secondary"
+        android:textSize="11sp" />
+</LinearLayout>
