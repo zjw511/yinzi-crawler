@@ -82,12 +82,18 @@ object DownloadManager {
         if (Prefs.isDownloaded(item.url)) {
             return@withContext DownloadResult.Success(Uri.EMPTY, "already downloaded")
         }
-        // 防止重复下载：同一 URL 正在下载中则跳过
+        // 防止重复下载
         if (!inFlight.add(item.url)) {
             return@withContext DownloadResult.Success(Uri.EMPTY, "already downloading")
         }
 
         try {
+            // m3u8 → 下载所有 ts 切片并合并
+            if (item.url.contains(".m3u8")) {
+                val result = downloadM3u8(item)
+                return@withContext result
+            }
+
             var lastError = ""
             for (attempt in 1..MAX_RETRY) {
                 if (attempt > 1) {
@@ -102,6 +108,113 @@ object DownloadManager {
         } finally {
             inFlight.remove(item.url)
             clearProgress(item.url)
+        }
+    }
+
+    /** 下载 m3u8：解析播放列表 → 下载所有 ts 切片 → 合并成单个 mp4 文件 */
+    private suspend fun downloadM3u8(item: MediaItem): DownloadResult = withContext(Dispatchers.IO) {
+        try {
+            setProgress(item.url, 0)
+
+            // 1) 下载 m3u8 播放列表
+            val req = Request.Builder().url(item.url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Mobile")
+                .header("Referer", "https://v.douyu.com/")
+                .build()
+            val resp = downloadClient.newCall(req).execute()
+            if (!resp.isSuccessful) {
+                clearProgress(item.url)
+                return@withContext DownloadResult.Failure("m3u8 HTTP ${resp.code}")
+            }
+            val m3u8Text = resp.body?.string() ?: ""
+            if (m3u8Text.isBlank()) {
+                clearProgress(item.url)
+                return@withContext DownloadResult.Failure("m3u8 内容为空")
+            }
+
+            // 2) 解析 ts 切片 URL
+            val baseUrl = item.url.substringBeforeLast('/')
+            val tsUrls = m3u8Text.lines()
+                .filter { it.isNotBlank() && !it.startsWith("#") }
+                .map { line ->
+                    if (line.startsWith("http")) line
+                    else if (line.startsWith("//")) "https:$line"
+                    else "$baseUrl/$line"
+                }
+
+            if (tsUrls.isEmpty()) {
+                clearProgress(item.url)
+                return@withContext DownloadResult.Failure("m3u8 里没有 ts 切片")
+            }
+
+            // 3) 下载所有 ts 切片到临时文件
+            val displayName = fileName(item)
+            val tmpDir = File(App.instance.cacheDir, "m3u8_${System.currentTimeMillis()}")
+            tmpDir.mkdirs()
+            val tsFiles = mutableListOf<File>()
+
+            for ((i, tsUrl) in tsUrls.withIndex()) {
+                val tsFile = File(tmpDir, "segment_${String.format("%05d", i)}.ts")
+                val tsReq = Request.Builder().url(tsUrl)
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Mobile")
+                    .header("Referer", "https://v.douyu.com/")
+                    .build()
+                val tsResp = downloadClient.newCall(tsReq).execute()
+                if (!tsResp.isSuccessful) {
+                    clearProgress(item.url)
+                    tmpDir.deleteRecursively()
+                    return@withContext DownloadResult.Failure("ts[${i}] HTTP ${tsResp.code}")
+                }
+                tsResp.body?.byteStream()?.use { input ->
+                    tsFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                tsFiles.add(tsFile)
+                val p = ((i + 1) * 100 / tsUrls.size).toInt().coerceIn(0, 99)
+                setProgress(item.url, p)
+            }
+
+            // 4) 合并所有 ts → 单个 mp4 文件
+            setProgress(item.url, 99)
+            val mime = "video/mp4"
+            val savedUri: Uri
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val cv = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/YinziCrawler/Videos")
+                }
+                val resolver = App.instance.contentResolver
+                val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                val uri = resolver.insert(collection, cv)
+                    ?: return@withContext DownloadResult.Failure("MediaStore insert null")
+                resolver.openOutputStream(uri)?.use { out ->
+                    tsFiles.forEach { f -> f.inputStream().use { it.copyTo(out) } }
+                    out.flush()
+                } ?: return@withContext DownloadResult.Failure("openOutputStream null")
+                savedUri = uri
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "YinziCrawler")
+                if (!dir.exists()) dir.mkdirs()
+                val file = File(dir, displayName)
+                file.outputStream().use { out ->
+                    tsFiles.forEach { f -> f.inputStream().use { it.copyTo(out) } }
+                    out.flush()
+                }
+                savedUri = Uri.fromFile(file)
+            }
+
+            // 5) 清理临时文件
+            tmpDir.deleteRecursively()
+
+            setProgress(item.url, 100)
+            Prefs.markDownloaded(item.url)
+            kotlinx.coroutines.delay(500)
+            clearProgress(item.url)
+            DownloadResult.Success(savedUri, displayName)
+        } catch (e: Exception) {
+            clearProgress(item.url)
+            DownloadResult.Failure("m3u8: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 

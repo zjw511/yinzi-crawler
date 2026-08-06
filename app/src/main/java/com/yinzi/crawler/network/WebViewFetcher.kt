@@ -365,7 +365,7 @@ object WebViewFetcher {
       push('VIDEO', s, p);
     }
   });
-  // 2) video.js 播放器实例：从 videojs 全局对象拿 player 的 cache_ 或 src
+  // 2) video.js 播放器实例
   try {
     if (typeof videojs !== 'undefined' && videojs.players) {
       Object.keys(videojs.players).forEach(function(id){
@@ -380,7 +380,7 @@ object WebViewFetcher {
       });
     }
   } catch(e){}
-  // 3) 扫 <video> 的 data-* 属性和 src 属性（即使不是 .mp4 后缀也抓）
+  // 3) <video> data-* 属性
   document.querySelectorAll('video').forEach(function(el){
     var attrs = ['src','data-src','data-video-src','data-video-url','data-url'];
     attrs.forEach(function(attr){
@@ -390,6 +390,21 @@ object WebViewFetcher {
       }
     });
   });
+  // 4) 斗鱼自研 demand-video 组件：player.src 是 m3u8 直链
+  try {
+    document.querySelectorAll('demand-video').forEach(function(el){
+      var p = el.player || (el.shadowRoot ? el.shadowRoot.querySelector('video') : null);
+      if (el.player && el.player.src) {
+        push('VIDEO', el.player.src, el.player.poster || '');
+      }
+      // Shadow DOM 里的 video
+      if (el.shadowRoot) {
+        var sv = el.shadowRoot.querySelector('video');
+        if (sv && sv.src) push('VIDEO', sv.src, '');
+        if (sv && sv.currentSrc) push('VIDEO', sv.currentSrc, '');
+      }
+    });
+  } catch(e){}
   return JSON.stringify(media);
 })();
 """.trimIndent()
