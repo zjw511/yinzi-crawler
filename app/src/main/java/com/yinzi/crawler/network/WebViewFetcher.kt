@@ -98,9 +98,10 @@ object WebViewFetcher {
         ctx: Context,
         postId: String
     ): List<MediaItem> = withContext(Dispatchers.Main) {
-        val url = "https://yuba.douyu.com/post/$postId"
+        val url = "https://yubam.douyu.com/post/$postId"
         val js = extractMediaJs()
-        val jsonStr = evaluateJs(ctx, url, js, waitMs = 8000L, preloadedHtml = null)
+        // 等 12 秒让 video.js 播放器初始化完成
+        val jsonStr = evaluateJs(ctx, url, js, waitMs = 12000L, preloadedHtml = null)
         if (jsonStr.isBlank()) return@withContext emptyList()
         runCatching { parseMediaJson(jsonStr, postId) }.getOrDefault(emptyList())
     }
@@ -356,12 +357,38 @@ object WebViewFetcher {
     var s = el.src || el.getAttribute('data-src') || el.getAttribute('data-original') || '';
     if(/\.(jpg|jpeg|png|webp|gif|bmp)(\?|$)/i.test(s)) push('IMAGE', s, null);
   });
-  document.querySelectorAll('video, source[src*=".mp4"]').forEach(function(el){
-    var s = el.src || el.getAttribute('data-src') || '';
-    if(/\.mp4(\?|$)/i.test(s)){
+  // 1) <video> 和 <source> 标签
+  document.querySelectorAll('video, source').forEach(function(el){
+    var s = el.src || el.getAttribute('data-src') || el.getAttribute('src') || '';
+    if(s && /\.(mp4|m3u8|flv|m4v|webm)(\?|$)/i.test(s)){
       var p = el.getAttribute('poster') || (el.parentElement ? (el.parentElement.querySelector('img')||{}).src || '':'');
       push('VIDEO', s, p);
     }
+  });
+  // 2) video.js 播放器实例：从 videojs 全局对象拿 player 的 cache_ 或 src
+  try {
+    if (typeof videojs !== 'undefined' && videojs.players) {
+      Object.keys(videojs.players).forEach(function(id){
+        try {
+          var p = videojs.players[id];
+          var src = p.src ? p.src() : (p.cache_ && p.cache_.src ? p.cache_.src : '');
+          if (src && /\.(mp4|m3u8|flv|m4v|webm)(\?|$)/i.test(src)) {
+            var poster = p.poster ? p.poster() : '';
+            push('VIDEO', src, poster);
+          }
+        } catch(e){}
+      });
+    }
+  } catch(e){}
+  // 3) 扫 <video> 的 data-* 属性和 src 属性（即使不是 .mp4 后缀也抓）
+  document.querySelectorAll('video').forEach(function(el){
+    var attrs = ['src','data-src','data-video-src','data-video-url','data-url'];
+    attrs.forEach(function(attr){
+      var s = el.getAttribute(attr);
+      if (s && s.indexOf('http') === 0) {
+        push('VIDEO', s, el.getAttribute('poster') || '');
+      }
+    });
   });
   return JSON.stringify(media);
 })();

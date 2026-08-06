@@ -30,14 +30,21 @@ class MainViewModel : ViewModel() {
 
     private var page = 0
     private var loaded: List<Post> = emptyList()
+    /** 已加载过的 post_id 集合，防止分页重复 */
+    private val loadedIds = mutableSetOf<String>()
+    /** 是否还有更多数据 */
+    private var hasMore = true
 
     fun refresh(groupId: String = _groupId.value) {
         page = 0
+        loadedIds.clear()
+        hasMore = true
         load(groupId, isRefresh = true)
     }
 
     fun loadMore() {
         if (_state.value is UiState.Loading) return
+        if (!hasMore) return
         page++
         load(_groupId.value, isRefresh = false)
     }
@@ -48,7 +55,21 @@ class MainViewModel : ViewModel() {
             try {
                 val result = YubaRepository.fetchPostsDebug(groupId, page)
                 val posts = result.posts
-                loaded = if (isRefresh) posts else loaded + posts
+
+                // 去重：过滤掉已加载的帖子
+                val newPosts = if (isRefresh) posts else posts.filter { it.id !in loadedIds }
+                newPosts.forEach { loadedIds.add(it.id) }
+
+                // 如果本页新帖为0，说明到底了
+                if (!isRefresh && newPosts.isEmpty()) {
+                    hasMore = false
+                }
+                // API 返回空也标记到底
+                if (posts.isEmpty()) {
+                    hasMore = false
+                }
+
+                loaded = if (isRefresh) posts else loaded + newPosts
 
                 // 拼接调试信息（下拉刷新时显示，让用户立刻知道链路）
                 val debug = buildString {
