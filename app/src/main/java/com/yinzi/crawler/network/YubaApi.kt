@@ -4,29 +4,39 @@ import retrofit2.http.GET
 import retrofit2.http.Path
 import retrofit2.http.Query
 
+/**
+ * 鱼吧手机版 (yubam.douyu.com) 真实 API
+ * v1.1.1 起使用，此前使用的 yuba.douyu.com/wbapi/web/group/561/post 已下线返回 404。
+ *
+ * 匿名模式/登录模式均使用同一路径，唯一区别是 Header 里有没有 Cookie。
+ */
 interface YubaApi {
 
     /**
-     * 鱼吧帖子列表（JSON 接口）
-     * 实测：https://yuba.douyu.com/wb-api/group/{group_id}/post?offset=0&limit=20
-     * 若接口字段或路径变动，YubaRepository 会自动兜底走 HTML 解析。
+     * 帖子列表接口（已实测 2025/08 可用，匿名 1 页返回 33 条，含 imglist 图片）
+     *   GET https://yubam.douyu.com/wbapi/web/group/postlist?group_id=561&page=1&limit=20
+     *
+     * 返回结构（节选）：
+     * {
+     *   "status_code": 200,  "total": 369201,  "page": 1,
+     *   "data": [ { post_id, title, describe, nickname, avatar, created_at_std,
+     *               imglist: [{url, thumb_url, size: {w,h}}],
+     *               video, audio, is_anchor_post, is_recom_top, ... } ... ]
+     * }
      */
-    @GET("wb-api/group/{groupId}/post")
-    suspend fun groupPosts(
-        @Path("groupId") groupId: String,
-        @Query("offset") offset: Int = 0,
-        @Query("limit") limit: Int = 20
+    @GET("/wbapi/web/group/postlist")
+    suspend fun postList(
+        @Query("group_id") groupId: String,
+        @Query("page") page: Int,              // 1-based
+        @Query("limit") limit: Int = 30,
+        @Query("type") type: Int = 0           // 0=全部；1=精华；2=图；3=视频
     ): String
 
-    /** 帖子详情，包含视频直链 */
-    @GET("wb-api/post/{postId}")
-    suspend fun postDetail(@Path("postId") postId: String): String
+    /** 帖子详情（用于补充列表里没展开的视频/原图）： GET https://yubam.douyu.com/wbapi/web/post/head/{post_id} */
+    @GET("/wbapi/web/post/head/{postId}")
+    suspend fun postHead(@Path("postId") postId: String): String
 
-    /** 鱼吧帖子列表 HTML 页面（兜底用） */
-    @GET("discussion/{groupId}/posts")
-    suspend fun groupPostsHtml(@Path("groupId") groupId: String): String
-
-    /** 帖子详情 HTML 页面（兜底用，用于解析视频直链） */
-    @GET("post/{postId}")
-    suspend fun postDetailHtml(@Path("postId") postId: String): String
+    /** 鱼吧头部信息：名称、头像、banner、粉丝数等，用于设置里的 group_id 有效性检查 */
+    @GET("/wbapi/web/group/head")
+    suspend fun groupHead(@Query("group_id") groupId: String): String
 }

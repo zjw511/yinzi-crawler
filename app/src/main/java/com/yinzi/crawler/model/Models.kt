@@ -18,7 +18,9 @@ data class MediaItem(
     val type: MediaType,
     val url: String,
     val thumbUrl: String? = null,
-    val postId: String? = null
+    val postId: String? = null,
+    /** true = 列表里没抓到直链，需要进入帖子详情页再抓一次（视频帖子常见） */
+    val needsDetail: Boolean = false
 ) {
     val isVideo: Boolean get() = type == MediaType.VIDEO
 }

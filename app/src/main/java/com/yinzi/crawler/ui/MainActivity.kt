@@ -120,12 +120,41 @@ class MainActivity : AppCompatActivity() {
                             b.tvEmpty.visibility =
                                 if (st.posts.isEmpty()) View.VISIBLE else View.GONE
                             adapter.submit(st.posts, clear = st.isRefresh)
+                            // 调试信息：显示链路与条数（尤其是首次/刷新时）
+                            if (st.isRefresh && !st.debug.isNullOrBlank()) {
+                                Snackbar.make(
+                                    b.root,
+                                    "刷新完成：${st.debug}",
+                                    Snackbar.LENGTH_LONG
+                                ).setAction("查看全部 ${st.posts.size} 条") {
+                                    b.rvPosts.smoothScrollToPosition(0)
+                                }.show()
+                            } else if (st.isRefresh) {
+                                Snackbar.make(
+                                    b.root,
+                                    "刷新完成，共 ${st.posts.size} 条",
+                                    Snackbar.LENGTH_SHORT
+                                ).show()
+                            }
                         }
                         is UiState.Error -> {
                             b.progressBar.visibility = View.GONE
                             b.tvEmpty.visibility = View.GONE
                             b.tvError.visibility = View.VISIBLE
-                            b.tvError.text = getString(R.string.error_network, st.msg)
+                            // 错误信息直接显示，不再套 string resource
+                            b.tvError.text = buildString {
+                                append("😵 没加载出内容\n\n")
+                                append(st.msg)
+                                append("\n\n")
+                                append("你可以：\n① 下拉刷新重试  ② 点右上角 设置 → App 内登录斗鱼\n")
+                                append("（匿名模式就能看到大部分内容，登录态解锁更多）")
+                            }
+                            // 顺便弹个 Toast，避免用户只看到顶栏白屏
+                            android.widget.Toast.makeText(
+                                this@MainActivity,
+                                "加载失败：${st.msg.take(40)}…",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
                 }
