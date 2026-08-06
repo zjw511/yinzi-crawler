@@ -25,30 +25,51 @@ class DownloadService : LifecycleService() {
         val types = intent?.getIntegerArrayListExtra(EXTRA_TYPES) ?: emptyList()
         if (urls.isEmpty()) { stopSelf(); return START_NOT_STICKY }
 
-        startForeground(NOTIF_ID, buildNotification(0, urls.size))
+        startForeground(NOTIF_ID, buildNotification(0, urls.size, 0))
         lifecycleScope.launch {
             var done = 0
+            var failed = 0
+            val errors = mutableListOf<String>()
             for ((i, u) in urls.withIndex()) {
                 val isVideo = types.getOrNull(i) == TYPE_VIDEO
-                DownloadManager.download(
-                    MediaItem(if (isVideo) MediaType.VIDEO else MediaType.IMAGE, u)
-                )
+                val item = MediaItem(if (isVideo) MediaType.VIDEO else MediaType.IMAGE, u)
+                val result = DownloadManager.download(item)
                 done++
-                notifyProgress(done, urls.size)
+                if (result is DownloadResult.Failure) {
+                    failed++
+                    errors.add(u.substringAfterLast('/').take(20) + ": " + result.error)
+                }
+                notifyProgress(done, urls.size, failed)
             }
+            // 完成通知
+            val nm = getSystemService(NotificationManager::class.java)
+            val doneNotif = NotificationCompat.Builder(this@DownloadService, App.CHANNEL_DOWNLOAD)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText(
+                    if (failed == 0) "下载完成：$done 个"
+                    else "下载完成：${done - failed} 成功 / $failed 失败"
+                )
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(NOTIF_ID + 1, doneNotif)
             stopSelf()
         }
         return START_NOT_STICKY
     }
 
-    private fun buildNotification(done: Int, total: Int): android.app.Notification {
+    private fun buildNotification(done: Int, total: Int, failed: Int = 0): android.app.Notification {
         val pi = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+        val text = if (failed > 0)
+            "下载中 $done/$total (失败 $failed)"
+        else
+            getString(R.string.download_running) + " ($done/$total)"
         return NotificationCompat.Builder(this, App.CHANNEL_DOWNLOAD)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.download_running) + " ($done/$total)")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setProgress(total, done, done == 0)
             .setContentIntent(pi)
@@ -56,9 +77,9 @@ class DownloadService : LifecycleService() {
             .build()
     }
 
-    private fun notifyProgress(done: Int, total: Int) {
+    private fun notifyProgress(done: Int, total: Int, failed: Int = 0) {
         val nm = getSystemService(NotificationManager::class.java) ?: return
-        nm.notify(NOTIF_ID, buildNotification(done, total))
+        nm.notify(NOTIF_ID, buildNotification(done, total, failed))
     }
 
     companion object {

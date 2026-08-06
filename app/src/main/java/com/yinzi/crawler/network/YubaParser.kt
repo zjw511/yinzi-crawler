@@ -97,15 +97,23 @@ object YubaParser {
                 media += MediaItem(MediaType.VIDEO, url = vstr, postId = id)
             }
             val extype = (o["extension_type"] as? JsonPrimitive)?.intOrNull ?: 0
-            // extension_type=8 = 视频帖子，video_url 可能还得走详情页补
+            // extension_type=8 = 视频帖子
+            // 列表接口里 video 字段为 null、cover/cover_url 为空，
+            // 但 imglist 里有一张视频封面截图(216x384竖屏)，
+            // 把它当视频封面，后续 Repository 会进详情页补直链
             if (extype == 8) {
-                // placeholder，Repository 后面会用 fetchPostMedia 补
-                if (o["cover_url"] != null) {
-                    media += MediaItem(
-                        MediaType.VIDEO, url = "", thumbUrl = o["cover_url"]?.toStr(), postId = id,
-                        needsDetail = true
-                    )
-                }
+                // 封面优先级：cover_url > cover > imglist[0].url > content里的[img]标签
+                val cover = o["cover_url"]?.toStr().orEmpty()
+                    .ifEmpty { o["cover"]?.toStr().orEmpty() }
+                    .ifEmpty { (o["imglist"] as? JsonArray)?.firstOrNull()?.let { (it as? JsonObject)?.get("url")?.toStr() }.orEmpty() }
+                    .ifEmpty { extractFirstImgFromContent(o["describe"]?.toStr() ?: o["content"]?.toStr() ?: "") }
+                media += MediaItem(
+                    MediaType.VIDEO,
+                    url = "",
+                    thumbUrl = cover.ifEmpty { null },
+                    postId = id,
+                    needsDetail = true
+                )
             }
         }
 
@@ -158,9 +166,52 @@ object YubaParser {
     // ============== 入口 3：帖子详情抽媒体 ==============
     fun extractMediaFromDetail(jsonOrHtml: String, postId: String = ""): List<MediaItem> {
         runCatching { Json.parseToJsonElement(jsonOrHtml) }.getOrNull()?.let {
-            val m = collectMediaFromNode(it, postId)
-            if (m.isNotEmpty()) return m
+            val root = it as? JsonObject ?: return@let
+            // 详情接口的 data 是帖子对象本身（不是数组）
+            val postObj = (root["data"] as? JsonObject) ?: root
+            val media = ArrayList<MediaItem>()
+
+            // 1) video 字段：可能是对象 {url, cover} 或字符串
+            val videoEl = postObj["video"]
+            if (videoEl != null && videoEl !is JsonNull) {
+                when (videoEl) {
+                    is JsonObject -> {
+                        val vurl = videoEl.firstByKeys(setOf("url","video_url","play_url","src","high","normal","mp4_url","real_url","video_path"))?.toStr()
+                        val cover = videoEl.firstByKeys(setOf("cover","thumb","poster","snapshot","cover_url"))?.toStr()
+                        if (!vurl.isNullOrEmpty() && isVideoUrl(vurl)) {
+                            media += MediaItem(MediaType.VIDEO, url = vurl, thumbUrl = cover, postId = postId)
+                        }
+                    }
+                    is JsonPrimitive -> {
+                        val vs = videoEl.toStr()
+                        if (vs.isNotEmpty() && isVideoUrl(vs)) {
+                            media += MediaItem(MediaType.VIDEO, url = vs, postId = postId)
+                        }
+                    }
+                    else -> {}
+                }
+            }
+
+            // 2) 从 content 里提取 [video url="..."] 或 [img url="..."] 标签
+            val content = postObj["content"]?.toStr() ?: postObj["describe"]?.toStr() ?: ""
+            extractVideoTags(content, postId).let { if (it.isNotEmpty()) media += it }
+            // 如果没有视频，至少把 content 里的图片当封面返回
+            if (media.none { m -> m.isVideo }) {
+                val coverFromContent = extractFirstImgFromContent(content)
+                if (coverFromContent.isNotEmpty()) {
+                    // 返回一个 needsDetail=false 的视频 placeholder，用 content 图片做封面
+                    // url 为空 → UI 上会标记为"视频暂不可用"
+                    media += MediaItem(MediaType.VIDEO, url = "", thumbUrl = coverFromContent, postId = postId)
+                }
+            }
+
+            // 3) 递归兜底
+            val extra = collectMediaFromNode(postObj, postId)
+            for (e in extra) if (e.url !in media.map { it.url }.toSet()) media += e
+
+            if (media.isNotEmpty()) return media
         }
+        // HTML 兜底
         return parseListFromHtml(jsonOrHtml).flatMap { it.media }
     }
 
@@ -233,6 +284,32 @@ object YubaParser {
 
     private fun JsonElement.toStr(): String =
         (this as? JsonPrimitive)?.content ?: this.toString().trim('"')
+
+    /** 从鱼吧 BBCode 格式 content 里提取第一个 [img url="..."] 的图片URL */
+    private fun extractFirstImgFromContent(content: String): String {
+        if (content.isEmpty()) return ""
+        // [img src="" url="https://..."] 或 [img]url[/img]
+        val regex = Regex("""\[img[^\]]*url="([^"]+)"""", RegexOption.IGNORE_CASE)
+        return regex.find(content)?.groupValues?.getOrNull(1)?.trim()?.let {
+            if (it.startsWith("http")) it else ""
+        } ?: ""
+    }
+
+    /** 从 content 里提取 [video url="..."] 标签的视频直链 */
+    private fun extractVideoTags(content: String, postId: String): List<MediaItem> {
+        if (content.isEmpty()) return emptyList()
+        val out = ArrayList<MediaItem>()
+        // [video src="" url="https://....mp4"] 或 [video]url[/video]
+        val regex = Regex("""\[video[^\]]*url="([^"]+)"|\[video[^\]]*src="([^"]+)"""", RegexOption.IGNORE_CASE)
+        regex.findAll(content).forEach { m ->
+            val url = (m.groupValues.getOrNull(1)?.takeIf { it.isNotEmpty() }
+                ?: m.groupValues.getOrNull(2)?.takeIf { it.isNotEmpty() })?.trim() ?: ""
+            if (url.isNotEmpty() && isVideoUrl(url)) {
+                out += MediaItem(MediaType.VIDEO, url = url, postId = postId)
+            }
+        }
+        return out
+    }
 
     private fun isImageUrl(s: String): Boolean {
         if (s.isBlank() || !s.startsWith("http")) return false

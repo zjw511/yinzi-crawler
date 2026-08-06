@@ -62,7 +62,7 @@ object Net {
             val orig = chain.request()
             val url = orig.url.toString()
             val referer = when {
-                url.contains("/post/head") || url.contains("/postdetail") ->
+                url.contains("/post/detail") || url.contains("/post/head") || url.contains("/postdetail") ->
                     "https://yubam.douyu.com/post/" + url.substringAfterLast('/').takeWhile { it.isDigit() || it == '_' || it.isLetter() }
                 else -> "https://yubam.douyu.com/group/${Prefs.groupId}"
             }

@@ -32,8 +32,11 @@ interface YubaApi {
         @Query("type") type: Int = 0           // 0=全部；1=精华；2=图；3=视频
     ): String
 
-    /** 帖子详情（用于补充列表里没展开的视频/原图）： GET https://yubam.douyu.com/wbapi/web/post/head/{post_id} */
-    @GET("/wbapi/web/post/head/{postId}")
+    /** 帖子详情：补充视频直链、原图等
+     *  v1.2 修正：之前用的 /post/head 返回的是鱼吧头部信息(group_name/fans_num)，
+     *  实测 /post/detail 才返回帖子内容(含 video 字段)。
+     *  GET https://yubam.douyu.com/wbapi/web/post/detail/{postId} */
+    @GET("/wbapi/web/post/detail/{postId}")
     suspend fun postHead(@Path("postId") postId: String): String
 
     /** 鱼吧头部信息：名称、头像、banner、粉丝数等，用于设置里的 group_id 有效性检查 */

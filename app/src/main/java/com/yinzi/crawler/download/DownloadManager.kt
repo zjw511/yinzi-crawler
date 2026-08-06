@@ -15,10 +15,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
+import java.util.concurrent.TimeUnit
 
 /**
  * 下载结果
@@ -34,25 +36,55 @@ data class DownloadProgress(val url: String, val percent: Int)
  * 简易下载器：
  * - 图片存到 MediaStore.Images，视频存到 MediaStore.Video
  * - Android 10+ 用 MediaStore，旧版本直接写公共目录
+ * - v1.2：加重试(3次)、加大超时(60s)、实时进度上报
  */
 object DownloadManager {
+
+    private const val MAX_RETRY = 3
 
     private val _progress = MutableStateFlow<Map<String, Int>>(emptyMap())
     val progress: StateFlow<Map<String, Int>> = _progress.asStateFlow()
 
+    /** 下载专用的 OkHttpClient：超时更长（大视频需要） */
+    private val downloadClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
     suspend fun download(item: MediaItem): DownloadResult = withContext(Dispatchers.IO) {
-        try {
-            if (Prefs.isDownloaded(item.url)) {
-                // 已下载过，简单跳过
-                return@withContext DownloadResult.Success(Uri.EMPTY, "already downloaded")
+        if (Prefs.isDownloaded(item.url)) {
+            return@withContext DownloadResult.Success(Uri.EMPTY, "already downloaded")
+        }
+
+        var lastError = ""
+        for (attempt in 1..MAX_RETRY) {
+            if (attempt > 1) {
+                _progress.value = _progress.value + (item.url to 0)
             }
+            val result = downloadOnce(item, attempt)
+            if (result is DownloadResult.Success) return@withContext result
+            lastError = (result as DownloadResult.Failure).error
+            // 重试前清进度
+            _progress.value = _progress.value - item.url
+        }
+        DownloadResult.Failure(lastError)
+    }
+
+    private suspend fun downloadOnce(item: MediaItem, attempt: Int): DownloadResult = withContext(Dispatchers.IO) {
+        try {
             _progress.value = _progress.value + (item.url to 0)
 
             val req = Request.Builder().url(item.url)
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Mobile")
                 .header("Referer", "https://yuba.douyu.com/")
                 .build()
-            val resp = Net.okHttp.newCall(req).execute()
+            val resp = downloadClient.newCall(req).execute()
             if (!resp.isSuccessful) {
                 _progress.value = _progress.value - item.url
                 return@withContext DownloadResult.Failure("HTTP ${resp.code}")
@@ -95,16 +127,20 @@ object DownloadManager {
 
             sink.use { out ->
                 val source = body.source()
-                val buf = ByteArray(16 * 1024)
+                val buf = ByteArray(32 * 1024)
                 var read: Int
                 var done = 0L
+                var lastReport = 0L
                 while (true) {
                     read = source.read(buf)
                     if (read == -1) break
                     out.write(buf, 0, read)
                     done += read
-                    if (total > 0) {
-                        val p = (done * 100 / total).toInt().coerceIn(0, 100)
+                    // 每 100KB 上报一次进度，避免 flow 刷新太频繁
+                    if (done - lastReport > 100 * 1024) {
+                        lastReport = done
+                        val p = if (total > 0) (done * 100 / total).toInt().coerceIn(0, 99)
+                        else -1  // 未知大小 → indeterminate
                         _progress.value = _progress.value + (item.url to p)
                     }
                 }
@@ -112,11 +148,14 @@ object DownloadManager {
             }
             _progress.value = _progress.value + (item.url to 100)
             Prefs.markDownloaded(item.url)
+            // 延迟一下再清除进度条，让 UI 能看到 100%
+            _progress.value = _progress.value + (item.url to 100)
+            kotlinx.coroutines.delay(500)
             _progress.value = _progress.value - item.url
             DownloadResult.Success(savedUri, displayName)
         } catch (e: Exception) {
             _progress.value = _progress.value - item.url
-            DownloadResult.Failure(e.message ?: e.javaClass.simpleName)
+            DownloadResult.Failure("${e.message ?: e.javaClass.simpleName} (attempt $attempt/$MAX_RETRY)")
         }
     }
 
