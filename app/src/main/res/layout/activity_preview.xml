@@ -13,11 +13,15 @@
         android:scaleType="fitCenter"
         android:contentDescription="@null" />
 
-    <!-- 全屏视频播放器（仅视频时显示） -->
-    <VideoView
-        android:id="@+id/vvPreview"
+    <!-- 全屏视频播放器（仅视频时显示）Media3 ExoPlayer，支持 m3u8 HLS -->
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/pvPreview"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:background="@android:color/black"
+        app:resize_mode="fit"
+        app:use_controller="true"
+        app:auto_show="true"
         android:visibility="gone" />
 
     <!-- 顶部栏：只放返回按钮 + 标题（避开状态栏遮挡） -->

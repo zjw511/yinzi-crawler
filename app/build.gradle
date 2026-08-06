@@ -1,8 +1,7 @@
-plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
-    id 'org.jetbrains.kotlin.plugin.serialization'
-}
+// 通过 buildscript classpath 方式 apply（更稳定）
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
 
 android {
     namespace 'com.yinzi.crawler'
@@ -12,8 +11,8 @@ android {
         applicationId "com.yinzi.crawler"
         minSdk 26
         targetSdk 34
-        versionCode 12
-        versionName "2.2"
+        versionCode 13
+        versionName "2.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -60,6 +59,12 @@ dependencies {
 
     // HTML 解析（兜底方案）
     implementation 'org.jsoup:jsoup:1.17.2'
+
+    // Media3 ExoPlayer：支持 HLS(m3u8) 视频播放（VideoView 不支持 m3u8）
+    implementation 'androidx.media3:media3-exoplayer:1.2.1'
+    implementation 'androidx.media3:media3-exoplayer-hls:1.2.1'
+    implementation 'androidx.media3:media3-ui:1.2.1'
+    implementation 'androidx.media3:media3-common:1.2.1'
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'

@@ -1,6 +1,22 @@
-// 顶层 build 文件
+// 顶层 build 文件（buildscript 方式更稳定）
+buildscript {
+    repositories {
+        // public 放前面：kotlin 等普通依赖直接找到，避免去 google 仓库白等超时
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        // AGP 8.7.0 匹配 Gradle 8.14（系统 Gradle 为 8.14.4）
+        classpath 'com.android.tools.build:gradle:8.7.0'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24'
+        classpath 'org.jetbrains.kotlin:kotlin-serialization:1.9.24'
+    }
+}
+
 plugins {
-    id 'com.android.application' version '8.5.2' apply false
-    id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
-    id 'org.jetbrains.kotlin.plugin.serialization' version '1.9.24' apply false
+    // 留空，所有插件通过 buildscript + apply 引入
 }
