@@ -23,6 +23,8 @@ import com.yinzi.crawler.network.YubaRepository
 import com.yinzi.crawler.util.PermissionUtil
 import com.yinzi.crawler.util.Prefs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -202,45 +204,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * v2.0: 下载前先在 Activity 层补全视频直链。
+     * v2.1: 下载前先在 Activity 层并发补全视频直链。
      * 原因：DownloadService 是无 UI 的 Service，在里面创建 WebView 跑 fetchPostDetail 时
      *       onPageFinished / shouldInterceptRequest 不稳定，导致视频 url 补全失败。
      *       改为在 Activity 存活时先补全（WebView 用 appCtx，Activity 主线程 Looper 活跃），
      *       补全后 url 非空，DownloadService 直接下载，不再跑 WebView。
+     * v2.1 优化：并发补全（async + awaitAll），最多 5 个视频同时跑，避免串行太慢。
      */
     private fun prepareAndDownload(media: List<MediaItem>) {
         // 检查是否有视频需要补全 url
-        val hasVideoToFix = media.any { it.isVideo && it.url.isBlank() && !it.postId.isNullOrBlank() }
-        if (!hasVideoToFix) {
+        val needFix = media.filter { it.isVideo && it.url.isBlank() && !it.postId.isNullOrBlank() }
+        if (needFix.isEmpty()) {
             // 没有需要补全的，直接启动下载
             startDownloadService(media)
             Snackbar.make(b.root, "已加入下载队列：${media.size} 个", Snackbar.LENGTH_SHORT).show()
             return
         }
         // 有视频需要补全，先提示用户等待
-        val snackbar = Snackbar.make(b.root, "正在解析视频直链，请稍候…", Snackbar.LENGTH_INDEFINITE)
+        val snackbar = Snackbar.make(b.root, "正在解析视频直链(${needFix.size}个)，请稍候…", Snackbar.LENGTH_INDEFINITE)
         snackbar.show()
         lifecycleScope.launch {
-            val fixed = withContext(Dispatchers.IO) {
-                media.map { m ->
-                    if (m.isVideo && m.url.isBlank() && !m.postId.isNullOrBlank()) {
+            // 并发补全所有需要补全的视频
+            val fixedMap = withContext(Dispatchers.IO) {
+                needFix.map { m ->
+                    async(Dispatchers.IO) {
                         val extra = runCatching {
                             YubaRepository.fetchPostMedia(m.postId!!)
                         }.getOrDefault(emptyList())
                         val videoUrl = extra.firstOrNull { it.isVideo && it.url.isNotBlank() }?.url
-                        if (!videoUrl.isNullOrBlank()) {
-                            // 补全成功，同时更新 url 和 thumbUrl
-                            m.copy(url = videoUrl, thumbUrl = m.thumbUrl ?: extra.firstOrNull { it.isVideo }?.thumbUrl)
-                        } else m
-                    } else m
-                }
+                        m to videoUrl  // m → 补全后的 url（可能为 null 表示失败）
+                    }
+                }.awaitAll().toMap()
             }
             snackbar.dismiss()
+            // 应用补全结果到 media 列表
+            val fixed = media.map { m ->
+                fixedMap[m]?.let { resolvedUrl ->
+                    if (!resolvedUrl.isNullOrBlank()) {
+                        m.copy(url = resolvedUrl)
+                    } else {
+                        m  // 补全失败，保持原样（url 仍空）
+                    }
+                } ?: m
+            }
             // 过滤掉仍 url 为空的视频（无法下载）
             val downloadable = fixed.filter { !it.isVideo || it.url.isNotBlank() }
             val skipped = fixed.size - downloadable.size
             if (downloadable.isEmpty()) {
-                Snackbar.make(b.root, "视频直链解析失败，无法下载", Snackbar.LENGTH_LONG).show()
+                Snackbar.make(b.root, "视频直链解析全部失败，无法下载", Snackbar.LENGTH_LONG).show()
             } else {
                 startDownloadService(downloadable)
                 val msg = if (skipped > 0)

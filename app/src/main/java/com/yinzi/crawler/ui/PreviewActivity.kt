@@ -151,11 +151,18 @@ class PreviewActivity : AppCompatActivity() {
 
     private fun observeProgress() {
         val item = mediaItem ?: return
+        var wasDownloading = false  // 之前是否在下载中
+        var downloadStartTime = 0L
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 DownloadManager.progress.collect { map ->
                     val p = map[item.url]
                     if (p != null) {
+                        // 下载中
+                        if (!wasDownloading) {
+                            wasDownloading = true
+                            downloadStartTime = System.currentTimeMillis()
+                        }
                         b.pbPreview.visibility = View.VISIBLE
                         b.tvStatus.visibility = View.VISIBLE
                         if (p < 0) {
@@ -166,7 +173,22 @@ class PreviewActivity : AppCompatActivity() {
                             b.pbPreview.progress = p
                             b.tvStatus.text = "下载中 $p%"
                         }
+                    } else if (wasDownloading) {
+                        // 从"下载中"变成"无进度" → 下载结束（成功或失败）
+                        wasDownloading = false
+                        b.pbPreview.visibility = View.GONE
+                        b.pbPreview.isIndeterminate = false
+                        if (Prefs.isDownloaded(item.url)) {
+                            b.tvStatus.visibility = View.VISIBLE
+                            b.tvStatus.text = "✓ 下载完成"
+                            Toast.makeText(this@PreviewActivity, "下载完成", Toast.LENGTH_SHORT).show()
+                        } else {
+                            b.tvStatus.visibility = View.VISIBLE
+                            b.tvStatus.text = "✗ 下载失败"
+                            Toast.makeText(this@PreviewActivity, "下载失败", Toast.LENGTH_SHORT).show()
+                        }
                     } else if (Prefs.isDownloaded(item.url)) {
+                        // 进入页面时已下载过
                         b.pbPreview.visibility = View.GONE
                         b.tvStatus.visibility = View.VISIBLE
                         b.tvStatus.text = "✓ 已保存"
