@@ -1,50 +1,100 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:padding="24dp">
+    android:fillViewport="true">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/group_id_hint"
-        android:textColor="@color/text_primary"
-        android:textSize="14sp" />
-
-    <EditText
-        android:id="@+id/etGroupId"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:inputType="number"
-        android:hint="561"
-        android:layout_marginTop="4dp" />
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/cookie_hint"
-        android:textColor="@color/text_primary"
-        android:textSize="14sp" />
+        <!-- 模式指示条 -->
+        <LinearLayout
+            android:id="@+id/modeBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:padding="12dp"
+            android:background="#E3F2FD"
+            android:layout_marginBottom="14dp">
 
-    <EditText
-        android:id="@+id/etCookie"
-        android:layout_width="match_parent"
-        android:layout_height="160dp"
-        android:gravity="top|start"
-        android:hint="acf_did=...; dy_auth=...; ..."
-        android:inputType="textMultiLine|textNoSuggestions"
-        android:textSize="12sp"
-        android:scrollbars="vertical"
-        android:layout_marginTop="4dp" />
+            <TextView
+                android:id="@+id/tvModeIcon"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="18sp"
+                android:text="🟢" />
 
-    <TextView
-        android:id="@+id/tvCookieTip"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Cookie 仅保存在本机，不会上传。建议从浏览器登录斗鱼鱼吧后复制请求头里的 Cookie。"
-        android:textColor="@color/text_secondary"
-        android:textSize="11sp" />
-</LinearLayout>
+            <TextView
+                android:id="@+id/tvMode"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:textSize="13sp"
+                android:textColor="#0D47A1"
+                android:lineSpacingExtra="2dp"
+                android:text="匿名模式：装完就能爬，不登录也能看到鱼吧帖子和图片。" />
+        </LinearLayout>
+
+        <!-- 一键登录按钮 -->
+        <Button
+            android:id="@+id/btnAppLogin"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:text="🐠 App 内登录斗鱼（一键拿 Cookie，不用复制粘贴）"
+            android:backgroundTint="#FF7043"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:padding="12dp"
+            android:layout_marginBottom="14dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/group_id_hint"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
+
+        <EditText
+            android:id="@+id/etGroupId"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="number"
+            android:hint="561"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="14dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="登录 Cookie（可选，填了能解锁完整内容和更多帖子）"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
+
+        <EditText
+            android:id="@+id/etCookie"
+            android:layout_width="match_parent"
+            android:layout_height="160dp"
+            android:gravity="top|start"
+            android:hint="acf_did=...; dy_auth=...; ...（留空=匿名模式）"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:textSize="12sp"
+            android:scrollbars="vertical"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:id="@+id/tvCookieTip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="11sp"
+            android:textColor="@color/text_secondary"
+            android:lineSpacingExtra="2dp"
+            android:text="💡 推荐用上面的橙色按钮「App 内登录斗鱼」扫码后自动保存，不用手动抓 Cookie。&#10;Cookie 仅保存在本机，不会上传任何服务器。" />
+    </LinearLayout>
+</ScrollView>

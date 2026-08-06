@@ -20,29 +20,46 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:orientation="vertical"
             android:paddingHorizontal="12dp"
-            android:paddingBottom="8dp"
-            android:gravity="center_vertical">
+            android:paddingBottom="8dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/tvGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:textColor="@color/white"
+                    android:textSize="13sp"
+                    android:text="group_id: 561" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSettings"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="设置"
+                    android:textColor="@color/white"
+                    app:icon="@android:drawable/ic_menu_preferences"
+                    app:iconTint="@color/white" />
+            </LinearLayout>
 
             <TextView
-                android:id="@+id/tvGroup"
-                android:layout_width="0dp"
+                android:id="@+id/tvMode"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:textColor="@color/white"
-                android:textSize="13sp"
-                android:text="group_id: 561" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnSettings"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="设置"
-                android:textColor="@color/white"
-                app:icon="@android:drawable/ic_menu_preferences"
-                app:iconTint="@color/white" />
+                android:text="🟢 匿名模式可直接使用"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:paddingStart="4dp"
+                android:paddingBottom="2dp"
+                android:visibility="gone" />
         </LinearLayout>
     </com.google.android.material.appbar.AppBarLayout>
 

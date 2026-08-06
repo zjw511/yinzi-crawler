@@ -43,6 +43,13 @@
             </intent-filter>
         </activity>
 
+        <!-- 内嵌浏览器登录斗鱼，登录完自动提取 Cookie -->
+        <activity
+            android:name=".ui.LoginActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:label="登录斗鱼鱼吧" />
+
         <service
             android:name=".download.DownloadService"
             android:exported="false"

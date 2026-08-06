@@ -2,10 +2,15 @@ package com.yinzi.crawler.util
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.webkit.CookieManager
+import java.net.HttpCookie
 
 /**
  * 应用偏好：保存鱼吧 group_id、登录 Cookie 等配置。
- * Cookie 来自用户在浏览器登录斗鱼后复制的请求头，仅在本地使用。
+ *
+ * 2025-08 v1.1：Cookie 现在允许为空（匿名模式）。
+ *  - 没设置 Cookie：用 WebView 匿名渲染鱼吧页面，直接从 DOM 里抽取帖子和媒体
+ *  - 设置了 Cookie：把 Cookie 注入 WebView，解锁登录态可见内容、高清原图、更多帖子
  */
 object Prefs {
     private lateinit var sp: SharedPreferences
@@ -23,7 +28,10 @@ object Prefs {
 
     var cookie: String
         get() = sp.getString(KEY_COOKIE, "") ?: ""
-        set(value) { sp.edit().putString(KEY_COOKIE, value).apply() }
+        set(value) { sp.edit().putString(KEY_COOKIE, value.trim()).apply() }
+
+    /** 未设置 Cookie → 使用匿名模式 */
+    val isAnonymous: Boolean get() = cookie.isBlank()
 
     /** 已下载的媒体 URL 集合（去重用） */
     var downloaded: Set<String>
@@ -35,6 +43,62 @@ object Prefs {
     }
 
     fun isDownloaded(url: String): Boolean = downloaded.contains(url)
+
+    // ============ WebView Cookie 辅助 ============
+
+    /**
+     * 将 Prefs 中保存的 Cookie 注入 Android WebView 的 CookieManager。
+     * 注入完成后 flush，确保后续 WebView 加载鱼吧页面时带上登录态。
+     * 匿名模式下会清空鱼吧域名的 Cookie（避免残留过期 Cookie 干扰）。
+     */
+    fun syncToWebView() {
+        val cm = CookieManager.getInstance()
+        cm.setAcceptCookie(true)
+        cm.setAcceptThirdPartyCookies(null, true)
+        val hosts = listOf("yuba.douyu.com", ".yuba.douyu.com",
+            "douyu.com", ".douyu.com", "www.douyu.com", ".douyucdn.cn")
+        if (isAnonymous) {
+            for (h in hosts) runCatching {
+                cm.setCookie(h, "")
+            }
+            cm.flush()
+            return
+        }
+        // 解析 "k1=v1; k2=v2" 并逐对 setCookie
+        val list = cookie.split(';').mapNotNull { s ->
+            val pair = s.trim()
+            if (pair.isEmpty() || '=' !in pair) return@mapNotNull null
+            val (k, v) = pair.split('=', limit = 2).map { it.trim() }
+            if (k.isEmpty()) null else k to v
+        }
+        for (h in hosts) {
+            for ((k, v) in list) {
+                runCatching {
+                    // HttpOnly=false 让 WebView 自己写出来的 AJAX 请求也带
+                    cm.setCookie(h, "$k=$v; Domain=$h; Path=/; SameSite=Lax")
+                }
+            }
+        }
+        cm.flush()
+    }
+
+    /**
+     * 从 WebView CookieManager 中读取 yuba.douyu.com / douyu.com 域下的全部 Cookie，
+     * 合并成 "k1=v1; k2=v2" 字符串并保存。
+     * 用于「App 内登录」按钮：用户在 WebView 里扫码登斗鱼后，直接点「提取并保存」。
+     */
+    fun syncFromWebView(): String {
+        val cm = CookieManager.getInstance()
+        val cookieString = buildList {
+            add(cm.getCookie("https://yuba.douyu.com").orEmpty())
+            add(cm.getCookie("https://www.douyu.com").orEmpty())
+            add(cm.getCookie("https://douyu.com").orEmpty())
+        }.filter { it.isNotBlank() }
+            .joinToString("; ") { it.trimEnd(';') }
+            .trim()
+        if (cookieString.isNotEmpty()) cookie = cookieString
+        return cookieString
+    }
 
     private const val KEY_GROUP_ID = "group_id"
     private const val KEY_COOKIE = "cookie"

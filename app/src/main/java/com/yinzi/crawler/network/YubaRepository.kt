@@ -1,58 +1,54 @@
 package com.yinzi.crawler.network
 
+import android.content.Context
 import com.yinzi.crawler.model.MediaItem
 import com.yinzi.crawler.model.Post
 import com.yinzi.crawler.util.Prefs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
- * 鱼吧数据仓库：
- *  1. 优先调 wb-api JSON 接口
- *  2. 失败/空数据时回退到 HTML 页面解析（含 Next.js __NEXT_DATA__）
- *  3. 对只有缩略图但没拿到 mp4 直链的视频，再请求帖子详情补全
+ * 鱼吧数据仓库（v1.1 改走 WebViewFetcher）
+ *
+ * 抓取策略：
+ *  1. 列表页：用 WebView 渲染鱼吧页面，渲染完用 evaluateJavascript 抽 DOM 里的帖子卡片和媒体
+ *  2. 详情补全：如果某帖子内容里明显有视频却没抓到直链，再抓一次详情页
+ *  3. 匿名 / 登录态 共用一套逻辑——WebViewFetcher 里的 CookieManager 已经把 Prefs.cookie 自动注入
+ *
+ * 下载媒体（图片、mp4）仍走 OkHttp（DownloadManager 不变）。
  */
 object YubaRepository {
 
-    private val api: YubaApi get() = Net.api
+    private lateinit var appCtx: Context
 
-    /** 拉取一页帖子 */
-    suspend fun fetchPosts(groupId: String = Prefs.groupId, page: Int = 0): List<Post> {
-        val offset = page * Prefs.DEFAULT_PAGE_LIMIT
-        // 1) JSON 接口
-        val posts = runCatching {
-            val body = api.groupPosts(groupId, offset, Prefs.DEFAULT_PAGE_LIMIT)
-            YubaParser.parseListFromApi(body)
-        }.getOrDefault(emptyList())
-        if (posts.isNotEmpty()) return enrich(posts)
-        // 2) HTML 兜底
-        val html = runCatching { api.groupPostsHtml(groupId) }.getOrNull()
-            ?: return emptyList()
-        return YubaParser.parseListFromHtml(html)
+    fun init(ctx: Context) {
+        appCtx = ctx.applicationContext
     }
 
-    /** 对含视频但缺直链的帖子，拉详情补全 */
-    private suspend fun enrich(posts: List<Post>): List<Post> {
-        return posts.map { post ->
-            val hasVideoMissingUrl = post.media.any { it.isVideo }
-            // 解析器一般已经能从列表里拿到 mp4，这里只在媒体为空时再拉详情
-            if (post.media.isEmpty() && post.id != "dom") {
-                val extra = runCatching {
-                    YubaParser.extractMediaFromDetail(api.postDetail(post.id))
-                }.getOrDefault(emptyList())
-                if (extra.isNotEmpty()) post.copy(media = extra) else post
+    /** 拉取一页帖子。page 从 0（第一页），映射到鱼吧前端的 page=1-based */
+    suspend fun fetchPosts(
+        groupId: String = Prefs.groupId,
+        page: Int = 0
+    ): List<Post> = withContext(Dispatchers.Main.immediate) {
+        val list = runCatching {
+            WebViewFetcher.fetchPosts(appCtx, groupId, page = page + 1)
+        }.getOrDefault(emptyList())
+        if (list.isEmpty()) return@withContext emptyList()
+        // 补全：空媒体但疑似视频的帖子，用详情页再抓一次
+        list.map { p ->
+            if (p.content.contains("视频") && p.media.isEmpty() && !p.id.startsWith("dom_")) {
+                val extra = runCatching { fetchPostMedia(p.id) }.getOrDefault(emptyList())
+                if (extra.isNotEmpty()) p.copy(media = extra) else p
             } else {
-                post
+                p
             }
         }
     }
 
-    /** 单独抓某个帖子详情里的所有媒体（点进帖子时用） */
-    suspend fun fetchPostMedia(postId: String): List<MediaItem> {
-        val json = runCatching { api.postDetail(postId) }.getOrNull()
-            ?: return emptyList()
-        val media = YubaParser.extractMediaFromDetail(json)
-        if (media.isNotEmpty()) return media
-        // 兜底 HTML
-        val html = runCatching { api.postDetailHtml(postId) }.getOrNull() ?: return emptyList()
-        return YubaParser.extractMediaFromDetail(html)
-    }
+    /** 抓某个帖子详情里的所有媒体（用于「点击卡片内容里的原图/视频） */
+    suspend fun fetchPostMedia(postId: String): List<MediaItem> = runCatching {
+        withContext(Dispatchers.Main.immediate) {
+            WebViewFetcher.fetchPostDetail(appCtx, postId)
+        }
+    }.getOrDefault(emptyList())
 }

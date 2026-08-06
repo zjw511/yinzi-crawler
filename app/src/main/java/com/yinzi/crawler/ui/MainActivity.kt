@@ -77,9 +77,19 @@ class MainActivity : AppCompatActivity() {
 
         b.fabDownloadAll.setOnClickListener { downloadAllVisible() }
 
-        // 首次启动：没 Cookie 给个提示
+        // 顶部栏显示当前模式（匿名 / 登录态）
+        val (modeIcon, modeText, modeColor) = when {
+            Prefs.cookie.isBlank() -> Triple("🟢", "匿名模式可直接使用", 0xFF1976D2.toInt())
+            else -> Triple("🟡", "已登录，解锁更多内容", 0xFFF57C00.toInt())
+        }
+        b.tvMode.text = "$modeIcon $modeText"
+        b.tvMode.setTextColor(modeColor)
+        b.tvMode.visibility = View.VISIBLE
+        b.tvGroup.text = "group_id: ${Prefs.groupId}"
+
+        // 首次启动：友好引导（不再是警告）
         if (Prefs.cookie.isEmpty()) {
-            Snackbar.make(b.root, R.string.no_cookie_warning, Snackbar.LENGTH_LONG)
+            Snackbar.make(b.root, "匿名模式直接能用，想登录点右上角 ⚙ 设置 → App 内登录斗鱼即可。", Snackbar.LENGTH_LONG)
                 .setAction("去设置") { SettingsDialog().show(supportFragmentManager, "settings") }
                 .show()
         }

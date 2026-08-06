@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import com.yinzi.crawler.network.Net
+import com.yinzi.crawler.network.YubaRepository
 import com.yinzi.crawler.util.Prefs
 
 class App : Application() {
@@ -13,6 +14,7 @@ class App : Application() {
         instance = this
         Prefs.init(this)
         Net.init()
+        YubaRepository.init(this)   // v1.1: Repository 需要应用 Context 构造 WebView
         createDownloadChannel()
     }
 
