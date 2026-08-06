@@ -93,17 +93,79 @@ object WebViewFetcher {
 
     /**
      * 进入某个帖子详情页，把漏抓的视频直链和更多图片补全。
+     * v1.8: 改用 PC 版 yuba.douyu.com/p/{id}，demand-video 组件只在 PC 版渲染。
+     *      同时拦截 WebView 网络请求，直接抓 .m3u8/.mp4 URL（不依赖 JS 时机，最稳）。
      */
     suspend fun fetchPostDetail(
         ctx: Context,
         postId: String
     ): List<MediaItem> = withContext(Dispatchers.Main) {
-        val url = "https://yubam.douyu.com/post/$postId"
+        // PC 版帖子页，demand-video 组件会渲染 m3u8
+        val url = "https://yuba.douyu.com/p/$postId"
         val js = extractMediaJs()
-        // 等 12 秒让 video.js 播放器初始化完成
-        val jsonStr = evaluateJs(ctx, url, js, waitMs = 12000L, preloadedHtml = null)
-        if (jsonStr.isBlank()) return@withContext emptyList()
-        runCatching { parseMediaJson(jsonStr, postId) }.getOrDefault(emptyList())
+
+        // 拦截到的视频直链（线程安全集合，shouldInterceptRequest 在后台线程回调）
+        val interceptedVideos = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+        val result = CompletableDeferred<String>()
+        val wv = createWebView(ctx)
+        val main = Handler(Looper.getMainLooper())
+        val timeout = Runnable { result.complete("") }
+
+        wv.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView?, request: WebResourceRequest?
+            ): android.webkit.WebResourceResponse? {
+                // 记录所有视频流请求（m3u8/mp4/flv），不拦截让请求正常走
+                val u = request?.url?.toString() ?: return null
+                val lower = u.lowercase()
+                if (lower.contains(".m3u8") || lower.contains(".mp4") ||
+                    lower.contains(".flv") || lower.contains(".m4v")) {
+                    interceptedVideos.add(u)
+                }
+                return null
+            }
+
+            override fun onPageFinished(view: WebView?, u: String?) {
+                main.removeCallbacks(timeout)
+                // 等 15 秒让 demand-video 组件初始化并加载 player.src
+                main.postDelayed({
+                    view?.evaluateJavascript(js) { s ->
+                        result.complete(jsonStripQuote(s))
+                        wv.destroySafely()
+                    }
+                }, 15000L)
+            }
+
+            override fun onReceivedError(
+                view: WebView?, req: WebResourceRequest?, err: WebResourceError?
+            ) { /* 忽略子资源报错 */ }
+        }
+        wv.webChromeClient = WebChromeClient()
+
+        main.postDelayed(timeout, 30000L)
+        wv.loadUrl(url)
+
+        val jsonStr = try {
+            withTimeout(33000L) { result.await() }
+        } catch (_: Throwable) { "" }.also {
+            main.removeCallbacks(timeout)
+            wv.destroySafely()
+        }
+
+        // 合并：DOM 抽取 + 网络拦截
+        val fromDom = if (jsonStr.isNotBlank())
+            runCatching { parseMediaJson(jsonStr, postId) }.getOrDefault(emptyList())
+        else emptyList()
+        val fromNet = interceptedVideos.map { MediaItem(MediaType.VIDEO, it, postId = postId) }
+        // 去重合并（优先 DOM 里有封面的，再补网络拦截的）
+        val seen = mutableSetOf<String>()
+        val merged = mutableListOf<MediaItem>()
+        for (m in fromDom + fromNet) {
+            if (m.url.isBlank()) continue
+            if (seen.add(m.url)) merged.add(m)
+        }
+        merged
     }
 
     // ------------------------------------------------------------------

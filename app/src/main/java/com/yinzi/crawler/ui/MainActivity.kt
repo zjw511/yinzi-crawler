@@ -116,7 +116,8 @@ class MainActivity : AppCompatActivity() {
                             b.tvError.visibility = View.GONE
                             b.tvEmpty.visibility =
                                 if (st.posts.isEmpty()) View.VISIBLE else View.GONE
-                            adapter.submit(st.posts, clear = st.isRefresh)
+                            // ViewModel.loaded 已是去重全量列表，始终用替换避免重复追加
+                            adapter.submit(st.posts, clear = true)
                             // 调试信息：显示链路与条数（尤其是首次/刷新时）
                             if (st.isRefresh && !st.debug.isNullOrBlank()) {
                                 Snackbar.make(
