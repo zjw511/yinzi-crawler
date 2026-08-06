@@ -151,6 +151,9 @@ object YubaParser {
                         )
                     }
                 }
+                else -> {
+                    DebugLog.w(TAG, "     postId=$id: video字段类型异常(${videoField!!::class.simpleName})，跳过视频创建")
+                }
             }
         } else {
             // 没有 video 字段，用 URL 字符串方式兜底
