@@ -72,11 +72,13 @@ object YubaRepository {
             }
         }
 
-        // 3) 视频补全：needsDetail=true 的媒体进帖子详情页补直链；最多补前 5 个避免流量爆炸
+        // 3) 详情补全：v1.9 起，所有帖子都进详情页补全（列表 API 的 imglist 最多 3 张，
+        //    多图帖的完整图片和视频直链只在详情 content 的 BBCode + 渲染后的 demand-video 里）。
+        //    并发执行避免阻塞；前 15 个帖子补全（覆盖首屏可见的帖子），其余保持列表的 3 张
         val toFix = list.mapNotNull { p ->
-            p.media.firstOrNull { it.isVideo && (it.url.isBlank() || it.needsDetail) }
-                ?.let { p to (it.postId ?: p.id) }
-        }.take(5)
+            val pid = p.media.firstOrNull()?.postId ?: p.id
+            p to pid
+        }.take(15)
         if (toFix.isNotEmpty()) {
             val fixedMap = toFix.map { (p, pid) ->
                 async(Dispatchers.IO) { p.id to fetchPostMedia(pid) }
@@ -84,9 +86,21 @@ object YubaRepository {
             list = list.map { p ->
                 fixedMap[p.id]?.let { extra ->
                     if (extra.isNotEmpty()) {
-                        val merged = p.media.filter { !it.isVideo || it.url.isNotBlank() }.toMutableList()
-                        merged.addAll(extra)
-                        p.copy(media = merged)
+                        // 合并：列表原有媒体 + 详情补充媒体，按 URL 去重
+                        val existingUrls = p.media.map { it.url }.toMutableSet()
+                        val merged = p.media.toMutableList()
+                        for (m in extra) {
+                            if (m.url.isBlank()) continue
+                            if (existingUrls.add(m.url)) merged.add(m)
+                        }
+                        // 如果详情补到了视频直链，移除列表里 url 为空的视频占位
+                        val hasRealVideo = merged.any { it.isVideo && it.url.isNotBlank() }
+                        if (hasRealVideo) {
+                            val filtered = merged.filter { !it.isVideo || it.url.isNotBlank() }
+                            p.copy(media = filtered)
+                        } else {
+                            p.copy(media = merged)
+                        }
                     } else p
                 } ?: p
             }
@@ -95,17 +109,41 @@ object YubaRepository {
         FetchResult(posts = list, via = via, apiError = apiErr, parseError = parseErr)
     }
 
-    /** 进入帖子详情拿视频直链 */
+    /**
+     * 进入帖子详情拿完整媒体。
+     * v1.9: API 拿 content 里的所有图片（多图帖补全）；
+     *      如果帖子是视频帖（extension_type=8 或 content 有 [video] 标签），
+     *      再走 WebView 拦截 m3u8 视频流（PC 版渲染 demand-video）。
+     */
     suspend fun fetchPostMedia(postId: String): List<MediaItem> = withContext(Dispatchers.IO) {
-        val json = runCatching { Net.api.postHead(postId) }
-            .mapCatching { YubaParser.extractMediaFromDetail(it, postId) }
-            .getOrDefault(emptyList())
-        if (json.isNotEmpty()) return@withContext json
-        // 兜底：WebView 抽 DOM
-        runCatching {
-            withContext(Dispatchers.Main.immediate) {
-                WebViewFetcher.fetchPostDetail(appCtx, postId)
+        // 1) 先调 API 拿图片（content 里的所有 [img] 标签）
+        val apiResult = runCatching {
+            val raw = Net.api.postHead(postId)
+            val media = YubaParser.extractMediaFromDetail(raw, postId)
+            // 解析 JSON 判断是否视频帖
+            val isVideoPost = YubaParser.isVideoPost(raw)
+            Triple(raw, media, isVideoPost)
+        }.getOrNull()
+
+        val fromApi = apiResult?.second ?: emptyList()
+        val isVideoPost = apiResult?.third ?: false
+
+        // 2) 如果没拿到视频直链，且帖子是视频帖，走 WebView 拦截 m3u8
+        val hasRealVideo = fromApi.any { it.isVideo && it.url.isNotBlank() }
+        if (!hasRealVideo && (isVideoPost || fromApi.isEmpty())) {
+            val fromWeb = runCatching {
+                withContext(Dispatchers.Main.immediate) {
+                    WebViewFetcher.fetchPostDetail(appCtx, postId)
+                }
+            }.getOrDefault(emptyList())
+            // 合并：API 图片 + WebView 视频，按 URL 去重
+            val urls = fromApi.map { it.url }.toMutableSet()
+            val merged = fromApi.toMutableList()
+            for (m in fromWeb) {
+                if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
             }
-        }.getOrDefault(emptyList())
+            return@withContext merged
+        }
+        fromApi
     }
 }

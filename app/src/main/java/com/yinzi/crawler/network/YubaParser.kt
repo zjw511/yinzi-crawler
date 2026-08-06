@@ -164,6 +164,22 @@ object YubaParser {
     }
 
     // ============== 入口 3：帖子详情抽媒体 ==============
+
+    /** 判断帖子是否为视频帖（extension_type=8 或 content 含 [video] 标签） */
+    fun isVideoPost(jsonOrHtml: String): Boolean {
+        runCatching { Json.parseToJsonElement(jsonOrHtml) }.getOrNull()?.let {
+            val root = it as? JsonObject ?: return@let
+            val postObj = (root["data"] as? JsonObject) ?: root
+            // 1) extension_type == 8 是视频帖
+            val extType = (postObj["extension_type"] as? JsonPrimitive)?.intOrNull ?: 0
+            if (extType == 8) return true
+            // 2) content/describe 里有 [video] BBCode 标签
+            val content = postObj["content"]?.toStr() ?: postObj["describe"]?.toStr() ?: ""
+            if (content.contains("[video", ignoreCase = true)) return true
+        }
+        return false
+    }
+
     fun extractMediaFromDetail(jsonOrHtml: String, postId: String = ""): List<MediaItem> {
         runCatching { Json.parseToJsonElement(jsonOrHtml) }.getOrNull()?.let {
             val root = it as? JsonObject ?: return@let
@@ -192,18 +208,17 @@ object YubaParser {
                 }
             }
 
-            // 2) 从 content 里提取 [video url="..."] 或 [img url="..."] 标签
+            // 2) 从 content 里提取所有 [img url="..."] 和 [video url="..."] 标签
+            //    鱼吧列表 API 的 imglist 最多只返回 3 张，多图帖的完整图片只在详情 content 的 BBCode 里
             val content = postObj["content"]?.toStr() ?: postObj["describe"]?.toStr() ?: ""
-            extractVideoTags(content, postId).let { if (it.isNotEmpty()) media += it }
-            // 如果没有视频，至少把 content 里的图片当封面返回
-            if (media.none { m -> m.isVideo }) {
-                val coverFromContent = extractFirstImgFromContent(content)
-                if (coverFromContent.isNotEmpty()) {
-                    // 返回一个 needsDetail=false 的视频 placeholder，用 content 图片做封面
-                    // url 为空 → UI 上会标记为"视频暂不可用"
-                    media += MediaItem(MediaType.VIDEO, url = "", thumbUrl = coverFromContent, postId = postId)
-                }
+            // 提取所有图片（不只是第一张）
+            val allImgs = extractAllImagesFromContent(content, postId)
+            for (img in allImgs) {
+                if (img.url !in media.map { it.url }.toSet()) media += img
             }
+            extractVideoTags(content, postId).let { if (it.isNotEmpty()) media += it }
+            // 如果没有视频，且 content 里有图片，不再生成空 url 的视频占位
+            // （v1.9 之前这里只取第一张图当视频封面，导致多图帖丢失图片）
 
             // 3) 递归兜底
             val extra = collectMediaFromNode(postObj, postId)
@@ -293,6 +308,21 @@ object YubaParser {
         return regex.find(content)?.groupValues?.getOrNull(1)?.trim()?.let {
             if (it.startsWith("http")) it else ""
         } ?: ""
+    }
+
+    /** 从 content 里提取所有 [img url="..."] 标签的图片URL（v1.9：多图帖完整补全） */
+    private fun extractAllImagesFromContent(content: String, postId: String): List<MediaItem> {
+        if (content.isEmpty()) return emptyList()
+        val out = ArrayList<MediaItem>()
+        // 匹配 [img src="" url="https://..."] 或 [img]https://...[/img]
+        val regex = Regex("""\[img[^\]]*url="([^"]+)"""", RegexOption.IGNORE_CASE)
+        regex.findAll(content).forEach { m ->
+            val url = m.groupValues.getOrNull(1)?.trim() ?: ""
+            if (url.startsWith("http") && isImageUrl(url)) {
+                out += MediaItem(MediaType.IMAGE, url = url, postId = postId)
+            }
+        }
+        return out
     }
 
     /** 从 content 里提取 [video url="..."] 标签的视频直链 */
