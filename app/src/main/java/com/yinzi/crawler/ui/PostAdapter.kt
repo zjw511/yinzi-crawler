@@ -1,11 +1,9 @@
 package com.yinzi.crawler.ui
 
 import android.view.LayoutInflater
-import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.bumptech.glide.Glide
 import com.yinzi.crawler.R
 import com.yinzi.crawler.databinding.ItemPostBinding
 import com.yinzi.crawler.download.DownloadManager
@@ -59,16 +57,7 @@ class PostAdapter(
         mediaAdapters.add(mediaAdapter)
         holder.mediaAdapter = mediaAdapter
         with(holder.b) {
-            tvAuthor.text = post.author.ifEmpty { "鱼吧用户" }
-            tvTime.text = post.time
-            tvContent.text = post.content
-            tvContent.visibility = if (post.content.isBlank()) View.GONE else View.VISIBLE
-
-            if (post.avatar != null) {
-                Glide.with(ivAvatar).load(post.avatar).circleCrop().into(ivAvatar)
-            }
-
-            // 媒体网格：3 列
+            // 媒体网格：3 列（单张时撑满整行）
             val spanCount = if (post.media.size == 1) 1 else 3
             val lm = GridLayoutManager(root.context, spanCount)
             rvMedia.layoutManager = lm
@@ -76,15 +65,9 @@ class PostAdapter(
             rvMedia.isNestedScrollingEnabled = false
             mediaAdapter.submit(post.media)
 
-            val imgCount = post.imageCount
-            val vidCount = post.videoCount
-            val parts = mutableListOf<String>()
-            if (imgCount > 0) parts.add(root.context.getString(R.string.images_count, imgCount))
-            if (vidCount > 0) parts.add(root.context.getString(R.string.videos_count, vidCount))
-            tvMediaCount.text = parts.joinToString(" · ")
-            tvMediaCount.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
-
             btnDownload.isEnabled = post.media.isNotEmpty()
+            btnDownload.visibility = if (post.media.isNotEmpty())
+                android.view.View.VISIBLE else android.view.View.GONE
             btnDownload.setOnClickListener { onDownloadPost(post) }
 
             // 滚到接近底部时触发加载更多
