@@ -20,14 +20,17 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
-    <!-- 顶部栏：返回 + 标题 + 保存按钮 -->
+    <!-- 顶部栏：只放返回按钮 + 标题（避开状态栏遮挡） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="12dp"
+        android:fitsSystemWindows="true"
+        android:paddingTop="36dp"
+        android:paddingHorizontal="12dp"
+        android:paddingBottom="8dp"
         android:background="#80000000">
 
         <com.google.android.material.button.MaterialButton
@@ -52,27 +55,18 @@
             android:textSize="14sp"
             android:maxLines="1"
             android:ellipsize="end" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSave"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="保存"
-            android:textSize="12sp"
-            app:icon="@android:drawable/stat_sys_download"
-            app:iconSize="16dp"
-            app:strokeColor="#FFFFFF"
-            android:textColor="#FFFFFF" />
     </LinearLayout>
 
-    <!-- 底部进度条（下载进度） -->
+    <!-- 底部栏：保存按钮 + 进度条 + 状态文字（全部放底部，避免被状态栏遮挡） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:orientation="vertical"
-        android:padding="12dp"
+        android:fitsSystemWindows="true"
+        android:paddingHorizontal="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="24dp"
         android:background="#80000000">
 
         <ProgressBar
@@ -85,14 +79,33 @@
             android:progressTint="#4CAF50"
             android:visibility="gone" />
 
-        <TextView
-            android:id="@+id/tvStatus"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="4dp"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:visibility="gone" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp">
+
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSave"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="保存"
+                android:textSize="12sp"
+                app:icon="@android:drawable/stat_sys_download"
+                app:iconSize="16dp"
+                app:strokeColor="#FFFFFF"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>
