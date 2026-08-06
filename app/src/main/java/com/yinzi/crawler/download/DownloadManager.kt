@@ -58,6 +58,9 @@ object DownloadManager {
     }
 
     suspend fun download(item: MediaItem): DownloadResult = withContext(Dispatchers.IO) {
+        if (item.url.isBlank()) {
+            return@withContext DownloadResult.Failure("URL 为空，无法下载")
+        }
         if (Prefs.isDownloaded(item.url)) {
             return@withContext DownloadResult.Success(Uri.EMPTY, "already downloaded")
         }

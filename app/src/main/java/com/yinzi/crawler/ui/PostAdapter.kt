@@ -8,6 +8,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.yinzi.crawler.R
 import com.yinzi.crawler.databinding.ItemPostBinding
+import com.yinzi.crawler.download.DownloadManager
 import com.yinzi.crawler.model.MediaItem
 import com.yinzi.crawler.model.Post
 
@@ -19,6 +20,9 @@ class PostAdapter(
 
     private val posts = mutableListOf<Post>()
 
+    /** 所有活跃的 MediaAdapter 引用（用于进度刷新） */
+    private val mediaAdapters = mutableSetOf<MediaAdapter>()
+
     fun submit(list: List<Post>, clear: Boolean = false) {
         if (clear) posts.clear()
         posts.addAll(list)
@@ -29,7 +33,17 @@ class PostAdapter(
 
     fun snapshot(): List<Post> = posts.toList()
 
-    inner class VH(val b: ItemPostBinding) : RecyclerView.ViewHolder(b.root)
+    /** 下载进度变化时调用：刷新所有活跃的 MediaAdapter */
+    fun onProgressChanged() {
+        val map = DownloadManager.progress.value
+        for (ma in mediaAdapters) {
+            ma.refreshProgress(map)
+        }
+    }
+
+    inner class VH(val b: ItemPostBinding) : RecyclerView.ViewHolder(b.root) {
+        var mediaAdapter: MediaAdapter? = null
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
         val b = ItemPostBinding.inflate(LayoutInflater.from(parent.context), parent, false)
@@ -41,6 +55,9 @@ class PostAdapter(
     override fun onBindViewHolder(holder: VH, position: Int) {
         val post = posts[position]
         val mediaAdapter = MediaAdapter { item, _ -> onMediaClick(item, post) }
+        holder.mediaAdapter?.let { mediaAdapters.remove(it) }
+        mediaAdapters.add(mediaAdapter)
+        holder.mediaAdapter = mediaAdapter
         with(holder.b) {
             tvAuthor.text = post.author.ifEmpty { "鱼吧用户" }
             tvTime.text = post.time
@@ -73,5 +90,11 @@ class PostAdapter(
             // 滚到接近底部时触发加载更多
             if (position == posts.size - 2) onReachEnd()
         }
+    }
+
+    override fun onViewRecycled(holder: VH) {
+        super.onViewRecycled(holder)
+        holder.mediaAdapter?.let { mediaAdapters.remove(it) }
+        holder.mediaAdapter = null
     }
 }

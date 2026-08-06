@@ -10,8 +10,11 @@ import com.yinzi.crawler.App
 import com.yinzi.crawler.R
 import com.yinzi.crawler.model.MediaItem
 import com.yinzi.crawler.model.MediaType
+import com.yinzi.crawler.network.YubaRepository
 import com.yinzi.crawler.ui.MainActivity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 前台服务：用于在后台批量下载视频/图片，
@@ -23,22 +26,44 @@ class DownloadService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         val urls = intent?.getStringArrayListExtra(EXTRA_URLS) ?: emptyList()
         val types = intent?.getIntegerArrayListExtra(EXTRA_TYPES) ?: emptyList()
+        val postIds = intent?.getStringArrayListExtra(EXTRA_POST_IDS) ?: emptyList()
         if (urls.isEmpty()) { stopSelf(); return START_NOT_STICKY }
 
         startForeground(NOTIF_ID, buildNotification(0, urls.size, 0))
         lifecycleScope.launch {
             var done = 0
             var failed = 0
-            val errors = mutableListOf<String>()
             for ((i, u) in urls.withIndex()) {
                 val isVideo = types.getOrNull(i) == TYPE_VIDEO
-                val item = MediaItem(if (isVideo) MediaType.VIDEO else MediaType.IMAGE, u)
+                var url = u
+
+                // 视频 placeholder：url 为空，需要先通过详情接口补全直链
+                if (isVideo && url.isBlank()) {
+                    val postId = postIds.getOrNull(i).orEmpty()
+                    if (postId.isNotBlank()) {
+                        val resolved = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val mediaList = YubaRepository.fetchPostMedia(postId)
+                                mediaList.firstOrNull { it.isVideo && it.url.isNotBlank() }?.url
+                            }.getOrNull()
+                        }
+                        if (!resolved.isNullOrBlank()) {
+                            url = resolved
+                        }
+                    }
+                    if (url.isBlank()) {
+                        // 还是拿不到直链，跳过
+                        failed++
+                        done++
+                        notifyProgress(done, urls.size, failed)
+                        continue
+                    }
+                }
+
+                val item = MediaItem(if (isVideo) MediaType.VIDEO else MediaType.IMAGE, url)
                 val result = DownloadManager.download(item)
                 done++
-                if (result is DownloadResult.Failure) {
-                    failed++
-                    errors.add(u.substringAfterLast('/').take(20) + ": " + result.error)
-                }
+                if (result is DownloadResult.Failure) failed++
                 notifyProgress(done, urls.size, failed)
             }
             // 完成通知
@@ -85,6 +110,7 @@ class DownloadService : LifecycleService() {
     companion object {
         const val EXTRA_URLS = "urls"
         const val EXTRA_TYPES = "types"
+        const val EXTRA_POST_IDS = "post_ids"
         const val NOTIF_ID = 1001
         const val TYPE_VIDEO = 1
         const val TYPE_IMAGE = 0

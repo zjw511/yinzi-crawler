@@ -160,11 +160,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        // 下载进度（简单：刷新已下载图标，进度细节先不画）
+        // 下载进度 → 刷新所有活跃的 MediaAdapter
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 DownloadManager.progress.collect { _ ->
-                    adapter.notifyItemRangeChanged(0, adapter.itemCount, "progress")
+                    adapter.onProgressChanged()
                 }
             }
         }
@@ -235,9 +235,11 @@ class MainActivity : AppCompatActivity() {
     private fun startDownloadService(media: List<MediaItem>) {
         val urls = ArrayList(media.map { it.url })
         val types = ArrayList(media.map { if (it.isVideo) 1 else 0 })
+        val postIds = ArrayList(media.map { it.postId ?: "" })
         val intent = Intent(this, DownloadService::class.java).apply {
             putStringArrayListExtra(DownloadService.EXTRA_URLS, urls)
             putIntegerArrayListExtra(DownloadService.EXTRA_TYPES, types)
+            putStringArrayListExtra(DownloadService.EXTRA_POST_IDS, postIds)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             startForegroundService(intent)

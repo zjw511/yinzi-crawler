@@ -31,6 +31,40 @@ class MediaAdapter(
     override fun getItemCount(): Int = items.size
 
     override fun onBindViewHolder(holder: VH, position: Int) {
+        bind(holder, position)
+    }
+
+    override fun onBindViewHolder(holder: VH, position: Int, payloads: MutableList<Any>) {
+        if (payloads.contains("progress")) {
+            // 仅刷新进度条，不重新加载图片
+            val item = items[position]
+            val p = DownloadManager.progress.value[item.url]
+            with(holder.b) {
+                if (p != null) {
+                    if (p < 0) {
+                        pbItem.isIndeterminate = true
+                        pbItem.visibility = android.view.View.VISIBLE
+                        tvProgress.text = "下载中…"
+                        tvProgress.visibility = android.view.View.VISIBLE
+                    } else {
+                        pbItem.isIndeterminate = false
+                        pbItem.progress = p
+                        pbItem.visibility = android.view.View.VISIBLE
+                        tvProgress.text = "$p%"
+                        tvProgress.visibility = android.view.View.VISIBLE
+                    }
+                } else {
+                    pbItem.visibility = android.view.View.GONE
+                    tvProgress.visibility = android.view.View.GONE
+                }
+                ivDone.visibility = if (Prefs.isDownloaded(item.url)) android.view.View.VISIBLE else android.view.View.GONE
+            }
+            return
+        }
+        super.onBindViewHolder(holder, position, payloads)
+    }
+
+    private fun bind(holder: VH, position: Int) {
         val item = items[position]
         with(holder.b) {
             val thumb = item.thumbUrl ?: item.url
@@ -39,11 +73,9 @@ class MediaAdapter(
             ivDone.visibility = if (Prefs.isDownloaded(item.url)) android.view.View.VISIBLE else android.view.View.GONE
             root.setOnClickListener { onClick(item, position) }
 
-            // 进度条：查 DownloadManager.progress
             val p = DownloadManager.progress.value[item.url]
             if (p != null) {
                 if (p < 0) {
-                    // 未知大小 → indeterminate
                     pbItem.isIndeterminate = true
                     pbItem.visibility = android.view.View.VISIBLE
                     tvProgress.text = "下载中…"
@@ -62,15 +94,10 @@ class MediaAdapter(
         }
     }
 
-    /** 外部调用：DownloadManager.progress 变化时刷新可见 item 的进度条 */
-    fun refreshProgress() {
-        val map = DownloadManager.progress.value
+    /** 刷新所有 item 的进度条（onBindViewHolder 会判断是否显示） */
+    fun refreshProgress(@Suppress("UNUSED_PARAMETER") progressMap: Map<String, Int>) {
         for (i in items.indices) {
-            val url = items[i].url
-            val p = map[url]
-            if (p != null) {
-                notifyItemChanged(i, "progress")
-            }
+            notifyItemChanged(i, "progress")
         }
     }
 }
