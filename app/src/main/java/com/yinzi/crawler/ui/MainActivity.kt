@@ -21,10 +21,7 @@ import com.yinzi.crawler.model.MediaItem
 import com.yinzi.crawler.model.Post
 import com.yinzi.crawler.util.PermissionUtil
 import com.yinzi.crawler.util.Prefs
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -186,39 +183,9 @@ class MainActivity : AppCompatActivity() {
         Snackbar.make(b.root, "已加入下载队列：${post.media.size} 个", Snackbar.LENGTH_SHORT).show()
     }
 
-    /** 点击单个媒体：图片预览，视频直接下载 */
-    private fun onMediaClick(item: MediaItem, post: Post) {
-        if (item.isVideo) {
-            startDownloadService(listOf(item))
-            Snackbar.make(b.root, "开始下载视频", Snackbar.LENGTH_SHORT).show()
-        } else {
-            // 用系统图片查看器打开（先把图片下载到临时文件）
-            previewImage(item)
-        }
-    }
-
-    private fun previewImage(item: MediaItem) {
-        lifecycleScope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                runCatching {
-                    val req = okhttp3.Request.Builder().url(item.url).build()
-                    val resp = com.yinzi.crawler.network.Net.okHttp.newCall(req).execute()
-                    if (!resp.isSuccessful) return@runCatching false
-                    val file = File(filesDir, "preview_${System.currentTimeMillis()}.jpg")
-                    file.outputStream().use { resp.body?.byteStream()?.copyTo(it) }
-                    val uri = androidx.core.content.FileProvider.getUriForFile(
-                        this@MainActivity, "${packageName}.fileprovider", file
-                    )
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, "image/*")
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    startActivity(intent)
-                    true
-                }.getOrDefault(false)
-            }
-            if (!ok) Snackbar.make(b.root, "图片打开失败", Snackbar.LENGTH_SHORT).show()
-        }
+    /** 点击单个媒体：图片/视频都进入全屏预览页 */
+    private fun onMediaClick(item: MediaItem, @Suppress("UNUSED_PARAMETER") post: Post) {
+        PreviewActivity.start(this, item)
     }
 
     /** 下载当前可见帖子里的全部媒体 */

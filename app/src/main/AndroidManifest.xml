@@ -50,6 +50,14 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:label="登录斗鱼鱼吧" />
 
+        <!-- 全屏预览：图片/视频浏览 -->
+        <activity
+            android:name=".ui.PreviewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.YinziCrawler.Fullscreen"
+            android:label="预览" />
+
         <service
             android:name=".download.DownloadService"
             android:exported="false"

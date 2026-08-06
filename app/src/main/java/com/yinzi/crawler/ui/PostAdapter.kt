@@ -57,8 +57,8 @@ class PostAdapter(
         mediaAdapters.add(mediaAdapter)
         holder.mediaAdapter = mediaAdapter
         with(holder.b) {
-            // 媒体网格：3 列（单张时撑满整行）
-            val spanCount = if (post.media.size == 1) 1 else 3
+            // 媒体网格：2 列（单张时撑满整行），图片更大更清晰
+            val spanCount = if (post.media.size == 1) 1 else 2
             val lm = GridLayoutManager(root.context, spanCount)
             rvMedia.layoutManager = lm
             rvMedia.adapter = mediaAdapter

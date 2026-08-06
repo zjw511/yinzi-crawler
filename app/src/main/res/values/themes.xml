@@ -8,4 +8,11 @@
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:statusBarColor" tools:targetApi="l">@color/primary_dark</item>
     </style>
+
+    <!-- 预览页全屏黑色背景，无标题栏，状态栏半透明 -->
+    <style name="Theme.YinziCrawler.Fullscreen" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor" tools:targetApi="l">#80000000</item>
+        <item name="android:windowTranslucentStatus" tools:targetApi="19">true</item>
+    </style>
 </resources>
