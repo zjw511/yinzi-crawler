@@ -1,10 +1,12 @@
 // 顶层 build 文件（buildscript 方式更稳定）
 buildscript {
     repositories {
-        // public 放前面：kotlin 等普通依赖直接找到，避免去 google 仓库白等超时
+        // 国内镜像优先：阿里云 → 腾讯云 → 华为云
         maven { url 'https://maven.aliyun.com/repository/public' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/public' }
+        maven { url 'https://repo.huaweicloud.com/repository/maven' }
         google()
         mavenCentral()
         gradlePluginPortal()

@@ -13,6 +13,7 @@ import android.webkit.WebViewClient
 import com.yinzi.crawler.model.MediaItem
 import com.yinzi.crawler.model.MediaType
 import com.yinzi.crawler.model.Post
+import com.yinzi.crawler.util.DebugLog
 import com.yinzi.crawler.util.Prefs
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,8 @@ import org.json.JSONObject
 @SuppressLint("SetJavaScriptEnabled")
 object WebViewFetcher {
 
+    private const val TAG = "WV"
+
     private const val DESKTOP_UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -49,6 +52,8 @@ object WebViewFetcher {
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "createWebView must run on main thread"
         }
+        val cookieHint = if (Prefs.isAnonymous) "匿名(无Cookie)" else "已登录(${Prefs.cookie.split(';').size}个字段)"
+        DebugLog.d(TAG, "🌐 createWebView：forLogin=$forLogin, cookie状态=$cookieHint")
         val wv = WebView(appCtx)
         val s: WebSettings = wv.settings
         s.javaScriptEnabled = true
@@ -80,15 +85,26 @@ object WebViewFetcher {
         page: Int = 1
     ): List<Post> = withContext(Dispatchers.Main) {
         val url = "https://yuba.douyu.com/discussion/$groupId/posts?page=$page"
+        DebugLog.i(TAG, "📚 fetchPosts 开始：url=$url")
         val html = loadAndGetOuterHtml(ctx, url, waitMs = 6000L)
-        if (html.isBlank()) return@withContext emptyList()
+        DebugLog.d(TAG, "   loadAndGetOuterHtml 结果：html.length=${html.length}")
+        if (html.isBlank()) {
+            DebugLog.e(TAG, "   ❌ 拿不到空 HTML，返回空")
+            return@withContext emptyList()
+        }
 
         // 直接 evaluateJavascript 拿 DOM
         val js = extractPostsJs()
         val jsonStr = evaluateJs(ctx, url, js, waitMs = 8000L, preloadedHtml = html)
-        if (jsonStr.isBlank()) return@withContext emptyList()
+        DebugLog.d(TAG, "   evaluateJs 抽帖结果：json.length=${jsonStr.length}, 前500字符=${DebugLog.truncate(jsonStr, 500)}")
+        if (jsonStr.isBlank()) {
+            DebugLog.e(TAG, "   ❌ JS抽帖返回空，返回空")
+            return@withContext emptyList()
+        }
 
-        runCatching { parsePostsJson(jsonStr) }.getOrDefault(emptyList())
+        val result = runCatching { parsePostsJson(jsonStr) }.getOrDefault(emptyList())
+        DebugLog.i(TAG, "   ✅ parsePostsJson 解析出 ${result.size} 条帖子")
+        result
     }
 
     /**
@@ -103,6 +119,7 @@ object WebViewFetcher {
         // PC 版帖子页，demand-video 组件会渲染 m3u8
         val url = "https://yuba.douyu.com/p/$postId"
         val js = extractMediaJs()
+        DebugLog.d(TAG, "🔍 fetchPostDetail：url=$url")
 
         // 拦截到的视频直链（线程安全集合，shouldInterceptRequest 在后台线程回调）
         val interceptedVideos = java.util.Collections.synchronizedSet(mutableSetOf<String>())
@@ -110,7 +127,10 @@ object WebViewFetcher {
         val result = CompletableDeferred<String>()
         val wv = createWebView(ctx)
         val main = Handler(Looper.getMainLooper())
-        val timeout = Runnable { result.complete("") }
+        val timeout = Runnable {
+            DebugLog.w(TAG, "   ⏰ 30s超时触发")
+            result.complete("")
+        }
 
         wv.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(
@@ -121,17 +141,22 @@ object WebViewFetcher {
                 val lower = u.lowercase()
                 if (lower.contains(".m3u8") || lower.contains(".mp4") ||
                     lower.contains(".flv") || lower.contains(".m4v")) {
+                    DebugLog.d(TAG, "   🎯 拦截视频请求：${u.take(100)}")
                     interceptedVideos.add(u)
                 }
                 return null
             }
 
             override fun onPageFinished(view: WebView?, u: String?) {
+                DebugLog.d(TAG, "   ✅ onPageFinished：$u")
                 main.removeCallbacks(timeout)
                 // 等 15 秒让 demand-video 组件初始化并加载 player.src
                 main.postDelayed({
+                    DebugLog.d(TAG, "   ⏱️  15s 到，evaluateJavascript 抽媒体")
                     view?.evaluateJavascript(js) { s ->
-                        result.complete(jsonStripQuote(s))
+                        val res = jsonStripQuote(s)
+                        DebugLog.d(TAG, "   JS 抽媒体结果：${res.length}字符，已拦截视频=${interceptedVideos.size}个")
+                        result.complete(res)
                         wv.destroySafely()
                     }
                 }, 15000L)
@@ -139,16 +164,22 @@ object WebViewFetcher {
 
             override fun onReceivedError(
                 view: WebView?, req: WebResourceRequest?, err: WebResourceError?
-            ) { /* 忽略子资源报错 */ }
+            ) {
+                DebugLog.w(TAG, "   ⚠️  onReceivedError: url=${req?.url}, err=${err?.description}, code=${err?.errorCode}")
+            }
         }
         wv.webChromeClient = WebChromeClient()
 
         main.postDelayed(timeout, 30000L)
         wv.loadUrl(url)
+        DebugLog.d(TAG, "   🚀 开始加载url，30s超时")
 
         val jsonStr = try {
             withTimeout(33000L) { result.await() }
-        } catch (_: Throwable) { "" }.also {
+        } catch (t: Throwable) {
+            DebugLog.e(TAG, "   ❌ withTimeout 异常：${t.message}")
+            ""
+        }.also {
             main.removeCallbacks(timeout)
             wv.destroySafely()
         }
@@ -158,6 +189,7 @@ object WebViewFetcher {
             runCatching { parseMediaJson(jsonStr, postId) }.getOrDefault(emptyList())
         else emptyList()
         val fromNet = interceptedVideos.map { MediaItem(MediaType.VIDEO, it, postId = postId) }
+        DebugLog.d(TAG, "   结果：DOM抽=${fromDom.size}, 网络拦截=${fromNet.size}")
         // 去重合并（优先 DOM 里有封面的，再补网络拦截的）
         val seen = mutableSetOf<String>()
         val merged = mutableListOf<MediaItem>()
@@ -165,7 +197,108 @@ object WebViewFetcher {
             if (m.url.isBlank()) continue
             if (seen.add(m.url)) merged.add(m)
         }
+        DebugLog.d(TAG, "   ✅ 去重合并后返回 ${merged.size} 个媒体")
         merged
+    }
+
+    /**
+     * 加载斗鱼视频分享页（v.douyu.com/show/{vid}），拦截 m3u8 请求获取视频直链。
+     * 这是获取斗鱼视频直链最可靠的方式：
+     *  帖子详情 API 不返回视频直链，只返回 data-playurl 指向分享页；
+     *  分享页由 demand-video 组件渲染，会发起 m3u8 请求，拦截即可。
+     *
+     * @param videoPageUrl 如 https://v.douyu.com/show/NbwE7ZxoGlBWn5Zz
+     */
+    suspend fun fetchVideoFromSharePage(
+        ctx: Context,
+        videoPageUrl: String,
+        postId: String = ""
+    ): List<MediaItem> = withContext(Dispatchers.Main) {
+        val interceptedUrls = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        DebugLog.d(TAG, "🎬 fetchVideoFromSharePage：url=$videoPageUrl")
+
+        val result = CompletableDeferred<String>()
+        val wv = createWebView(ctx)
+        val main = Handler(Looper.getMainLooper())
+        val timeout = Runnable {
+            DebugLog.w(TAG, "   ⏰ 25s超时触发，已拦截 ${interceptedUrls.size} 个链接")
+            result.complete("")
+        }
+
+        wv.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): android.webkit.WebResourceResponse? {
+                val u = request?.url?.toString() ?: return null
+                val lower = u.lowercase()
+                if (lower.contains(".m3u8") || lower.contains(".mp4") ||
+                    lower.contains(".flv") || lower.contains(".m4v")) {
+                    DebugLog.d(TAG, "   🎯 拦截到视频URL：${u.take(120)}")
+                    interceptedUrls.add(u)
+                }
+                return null
+            }
+
+            override fun onPageFinished(view: WebView?, u: String?) {
+                DebugLog.d(TAG, "   ✅ 分享页onPageFinished：$u，当前已拦截=${interceptedUrls.size}个")
+                main.removeCallbacks(timeout)
+                // 等 12 秒让 demand-video 组件初始化并发起 m3u8 请求
+                main.postDelayed({
+                    DebugLog.d(TAG, "   ⏱️  12s 到，兜底 evaluateJavascript 取 player.src")
+                    // 尝试从 JS 获取 player.src 作为兜底
+                    view?.evaluateJavascript("""
+                        (function(){
+                            try {
+                                var els = document.querySelectorAll('demand-video');
+                                for(var i=0;i<els.length;i++){
+                                    var el = els[i];
+                                    var p = el.player || (el.shadowRoot ? el.shadowRoot.querySelector('video') : null);
+                                    if(el.player && el.player.src) return el.player.src;
+                                    if(p && p.src) return p.src;
+                                    if(p && p.currentSrc) return p.currentSrc;
+                                }
+                                var v = document.querySelector('video');
+                                if(v && v.src) return v.src;
+                                return '';
+                            } catch(e) { return 'ERROR:'+e.message; }
+                        })();
+                    """) { s ->
+                        val jsUrl = jsonStripQuote(s)
+                        DebugLog.d(TAG, "   JS兜底结果：${if(jsUrl.isBlank())"(空)" else DebugLog.truncate(jsUrl, 120)}")
+                        if (jsUrl.isNotBlank() && jsUrl.startsWith("http")) interceptedUrls.add(jsUrl)
+                        DebugLog.d(TAG, "   完成，共拦截到视频URL=${interceptedUrls.size}个")
+                        result.complete("done")
+                        wv.destroySafely()
+                    }
+                }, 12000L)
+            }
+
+            override fun onReceivedError(
+                view: WebView?, req: WebResourceRequest?, err: WebResourceError?
+            ) {
+                DebugLog.w(TAG, "   ⚠️  分享页资源错误：url=${req?.url?.toString()?.take(80)}, err=${err?.description}")
+            }
+        }
+        wv.webChromeClient = WebChromeClient()
+
+        main.postDelayed(timeout, 25000L)
+        wv.loadUrl(videoPageUrl)
+        DebugLog.d(TAG, "   🚀 已loadUrl，25s超时")
+
+        try {
+            withTimeout(28000L) { result.await() }
+        } catch (t: Throwable) {
+            DebugLog.e(TAG, "   ❌ withTimeout 异常：${t.message}")
+            ""
+        }.also {
+            main.removeCallbacks(timeout)
+            wv.destroySafely()
+        }
+
+        DebugLog.d(TAG, "   最终拦截视频URL=${interceptedUrls.size}个：${interceptedUrls.joinToString { "\n     - $it" }}")
+        // 把拦截到的 URL 转成 MediaItem
+        interceptedUrls.map { url -> MediaItem(MediaType.VIDEO, url, postId = postId) }
     }
 
     // ------------------------------------------------------------------
@@ -177,19 +310,25 @@ object WebViewFetcher {
         url: String,
         waitMs: Long
     ): String = withContext(Dispatchers.Main) {
+        DebugLog.d(TAG, "   loadAndGetOuterHtml：url=$url, waitMs=$waitMs")
         val result = CompletableDeferred<String>()
         val wv = createWebView(ctx)
         val main = Handler(Looper.getMainLooper())
-        val timeout = Runnable { result.complete("") }
+        val timeout = Runnable {
+            DebugLog.w(TAG, "     ⏰ loadAndGetOuterHtml 超时(${waitMs + 10000}ms)")
+            result.complete("")
+        }
 
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, u: String?) {
+                DebugLog.d(TAG, "     onPageFinished=$u，延迟${waitMs}ms等渲染")
                 // 延迟 waitMs，给 XHR / 渲染留时间
                 main.removeCallbacks(timeout)
                 main.postDelayed({
                     view?.evaluateJavascript("document.documentElement.outerHTML") { htmlRaw ->
                         val html = if (htmlRaw == null || htmlRaw == "null") "" else
                             jsonStripQuote(htmlRaw)
+                        DebugLog.d(TAG, "     拿到outerHTML，长度=${html.length}")
                         result.complete(html)
                         wv.stopLoading()
                         wv.destroySafely()
@@ -199,7 +338,10 @@ object WebViewFetcher {
 
             override fun onReceivedError(
                 view: WebView?, req: WebResourceRequest?, err: WebResourceError?
-            ) { /* 忽略子资源报错，等 onPageFinished 兜底 */ }
+            ) {
+                DebugLog.w(TAG, "     ⚠️  onReceivedError: url=${req?.url?.toString()?.take(60)}, err=${err?.description}")
+                /* 忽略子资源报错，等 onPageFinished 兜底 */
+            }
         }
         wv.webChromeClient = WebChromeClient()
 
@@ -208,7 +350,8 @@ object WebViewFetcher {
 
         try {
             withTimeout(waitMs + 15000L) { result.await() }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            DebugLog.e(TAG, "     ❌ withTimeout异常：${t.message}")
             ""
         }.also {
             main.removeCallbacks(timeout)
@@ -223,10 +366,14 @@ object WebViewFetcher {
         waitMs: Long,
         preloadedHtml: String?
     ): String = withContext(Dispatchers.Main) {
+        DebugLog.d(TAG, "   evaluateJs：url=$url, waitMs=$waitMs, preloadedHtml=${!preloadedHtml.isNullOrBlank()}")
         val result = CompletableDeferred<String>()
         val wv = createWebView(ctx)
         val main = Handler(Looper.getMainLooper())
-        val timeout = Runnable { result.complete("") }
+        val timeout = Runnable {
+            DebugLog.w(TAG, "     ⏰ evaluateJs 超时")
+            result.complete("")
+        }
 
         // 如果 html 已经预加载了（同一个页面），直接用 dataUrl 写回去避免二次加载
         if (!preloadedHtml.isNullOrBlank()) {
@@ -234,8 +381,11 @@ object WebViewFetcher {
                 wv.loadDataWithBaseURL(url, preloadedHtml, "text/html", "UTF-8", url)
                 // 等 DOM ready
                 main.postDelayed({
+                    DebugLog.d(TAG, "     preloadedHtml 800ms 后 evaluateJavascript")
                     wv.evaluateJavascript(script) { s ->
-                        result.complete(jsonStripQuote(s))
+                        val r = jsonStripQuote(s)
+                        DebugLog.d(TAG, "     JS返回，长度=${r.length}")
+                        result.complete(r)
                         wv.destroySafely()
                     }
                 }, 800L)
@@ -243,10 +393,13 @@ object WebViewFetcher {
         } else {
             wv.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, u: String?) {
+                    DebugLog.d(TAG, "     onPageFinished=$u, 延迟${waitMs}ms后跑JS")
                     main.removeCallbacks(timeout)
                     main.postDelayed({
                         view?.evaluateJavascript(script) { s ->
-                            result.complete(jsonStripQuote(s))
+                            val r = jsonStripQuote(s)
+                            DebugLog.d(TAG, "     JS返回，长度=${r.length}")
+                            result.complete(r)
                             wv.destroySafely()
                         }
                     }, waitMs)
@@ -258,7 +411,8 @@ object WebViewFetcher {
 
         try {
             withTimeout(waitMs + 18000L) { result.await() }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            DebugLog.e(TAG, "     ❌ withTimeout异常：${t.message}")
             ""
         }.also {
             main.removeCallbacks(timeout)
@@ -271,7 +425,7 @@ object WebViewFetcher {
             stopLoading()
             removeAllViews()
             destroy()
-        }
+        }.onFailure { DebugLog.w(TAG, "   destroySafely 异常：${it.message}") }
     }
 
     /** WebView evaluateJavascript 会把字符串结果额外包一层 JSON 双引号 + 转义 */

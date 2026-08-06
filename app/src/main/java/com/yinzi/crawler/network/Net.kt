@@ -1,5 +1,6 @@
 package com.yinzi.crawler.network
 
+import com.yinzi.crawler.util.DebugLog
 import com.yinzi.crawler.util.Prefs
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit
  */
 object Net {
     private const val BASE = "https://yubam.douyu.com/"
+    private const val TAG_NET = "Net"
 
     lateinit var okHttp: OkHttpClient
         private set
@@ -34,6 +36,7 @@ object Net {
         "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
 
     fun init() {
+        DebugLog.i(TAG_NET, "初始化 OkHttp + Retrofit，BASE_URL=$BASE")
         okHttp = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(25, TimeUnit.SECONDS)
@@ -41,8 +44,14 @@ object Net {
             .followSslRedirects(true)
             .addInterceptor(HeaderInterceptor())
             .addInterceptor(
-                HttpLoggingInterceptor().apply {
-                    level = HttpLoggingInterceptor.Level.BASIC
+                HttpLoggingInterceptor { message ->
+                    // 把 OkHttp 的 logging 也打到 DebugLog，方便 UI 层查看
+                    if (message.startsWith("<--") || message.startsWith("-->") || message.contains("END")) {
+                        DebugLog.d("OkHttp", DebugLog.truncate(message, 2000))
+                    }
+                }.apply {
+                    // BODY 级别：请求行 + 头 + 响应体（鱼吧 JSON 不大，直接打完整）
+                    level = HttpLoggingInterceptor.Level.BODY
                 }
             )
             .build()
@@ -54,6 +63,7 @@ object Net {
             .build()
 
         api = retrofit.create()
+        DebugLog.i(TAG_NET, "✅ OkHttp + Retrofit 初始化完成")
     }
 
     /** 统一注入 UA / Referer / Origin / Accept / Cookie */
@@ -61,11 +71,23 @@ object Net {
         override fun intercept(chain: Interceptor.Chain): Response {
             val orig = chain.request()
             val url = orig.url.toString()
+            val method = orig.method
+            val shortUrl = url.take(120)
+
             val referer = when {
                 url.contains("/post/detail") || url.contains("/post/head") || url.contains("/postdetail") ->
                     "https://yubam.douyu.com/post/" + url.substringAfterLast('/').takeWhile { it.isDigit() || it == '_' || it.isLetter() }
                 else -> "https://yubam.douyu.com/group/${Prefs.groupId}"
             }
+
+            val rawCookie = Prefs.cookie.trim()
+            val cookieStatus = when {
+                rawCookie.isEmpty() -> "❌ 未设置 Cookie（匿名模式）"
+                else -> "✅ Cookie 已设置（${rawCookie.split(';').size} 个字段：${DebugLog.maskCookie(rawCookie)}）"
+            }
+
+            DebugLog.d(TAG_NET, "➡️ 请求 $method $shortUrl\nReferer=$referer\nCookie状态：$cookieStatus")
+
             val req = orig.newBuilder()
                 .header("User-Agent", UA)
                 .header("Accept", "application/json, text/plain, */*")
@@ -73,13 +95,38 @@ object Net {
                 .header("Referer", referer)
                 .header("Origin", "https://yubam.douyu.com")
                 .apply {
-                    val cookie = Prefs.cookie.trim()
-                    if (cookie.isNotEmpty()) {
-                        header("Cookie", cookie)
-                    }
+                    if (rawCookie.isNotEmpty()) header("Cookie", rawCookie)
                 }
                 .build()
-            return chain.proceed(req)
+
+            val startNs = System.nanoTime()
+            val response: Response
+            try {
+                response = chain.proceed(req)
+            } catch (t: Throwable) {
+                val cost = (System.nanoTime() - startNs) / 1_000_000
+                DebugLog.e(TAG_NET, "❌ 请求异常 $method $shortUrl\n耗时 ${cost}ms 失败：${t.message}", t)
+                throw t
+            }
+
+            val cost = (System.nanoTime() - startNs) / 1_000_000
+            val code = response.code
+            val msg = response.message
+            val bodyLen = response.body?.contentLength()?.takeIf { it > 0 }
+                ?: response.peekBody(1).string().length.toLong()
+
+            // 读取一小段响应体给调试（不影响后续消费，因为是 peek）
+            val bodyPeek = try { response.peekBody(800).string() } catch (_: Throwable) { "" }
+            val statusEmoji = when {
+                code in 200..299 -> "✅"
+                code in 300..399 -> "🔄"
+                code == 401 || code == 403 -> "🚫"
+                code == 404 -> "❓"
+                code >= 500 -> "💥"
+                else -> "⚠️"
+            }
+            DebugLog.i(TAG_NET, "⬅️ 响应 $statusEmoji $code $msg 耗时 ${cost}ms 大小 ${bodyLen}字节\nURL=$shortUrl\n响应体前800字符：\n${DebugLog.truncate(bodyPeek, 800)}")
+            return response
         }
     }
 }

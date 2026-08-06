@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.os.Build
 import com.yinzi.crawler.network.Net
 import com.yinzi.crawler.network.YubaRepository
+import com.yinzi.crawler.util.DebugLog
 import com.yinzi.crawler.util.Prefs
 
 class App : Application() {
@@ -13,6 +14,11 @@ class App : Application() {
         super.onCreate()
         instance = this
         Prefs.init(this)
+        DebugLog.i("App", "=============================================")
+        DebugLog.i("App", "🚀 寅子鱼吧爬虫启动")
+        DebugLog.i("App", "   版本：${packageManager.getPackageInfo(packageName, 0).versionName} (${packageManager.getPackageInfo(packageName, 0).longVersionCode})")
+        DebugLog.i("App", "   groupId=${Prefs.groupId}, 匿名=${Prefs.isAnonymous}, Cookie字段=${Prefs.cookie.takeIf { it.isNotBlank() }?.split(';')?.size ?: 0}")
+        DebugLog.i("App", "=============================================")
         Net.init()
         YubaRepository.init(this)   // v1.1: Repository 需要应用 Context 构造 WebView
         createDownloadChannel()

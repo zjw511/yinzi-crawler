@@ -3,6 +3,7 @@ package com.yinzi.crawler.network
 import android.content.Context
 import com.yinzi.crawler.model.MediaItem
 import com.yinzi.crawler.model.Post
+import com.yinzi.crawler.util.DebugLog
 import com.yinzi.crawler.util.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -22,10 +23,13 @@ import kotlinx.coroutines.withContext
  */
 object YubaRepository {
 
+    private const val TAG = "Repo"
+
     private lateinit var appCtx: Context
 
     fun init(ctx: Context) {
         appCtx = ctx.applicationContext
+        DebugLog.i(TAG, "✅ YubaRepository 初始化完成，groupId=${Prefs.groupId}，匿名=${Prefs.isAnonymous}")
     }
 
     /** 拉取结果附带调试信息：走了哪条链路、抓到多少条 */
@@ -48,18 +52,35 @@ object YubaRepository {
         page: Int = 0
     ): FetchResult = withContext(Dispatchers.IO) {
         val apiPage = page + 1   // API 是 1-based
+        DebugLog.i(TAG, "═══════════════════════════════════")
+        DebugLog.i(TAG, "🚀 开始拉取第 ${page+1} 页（API page=$apiPage），groupId=$groupId")
+
         // 1) 主路径：官方 JSON API
+        DebugLog.d(TAG, "1️⃣  主路径：调用官方 JSON 接口 postList")
         val json = runCatching {
             Net.api.postList(groupId = groupId, page = apiPage, limit = 30, type = 0)
         }
+        val jsonRaw = json.getOrNull()
+        DebugLog.d(TAG, "   JSON接口结果：${if (json.isSuccess) "✅成功(${jsonRaw?.length ?: 0}字符)" else "❌失败：${json.exceptionOrNull()?.message ?: json.exceptionOrNull()?.javaClass?.simpleName}"}")
+        DebugLog.d(TAG, "   JSON响应体前800字符：${DebugLog.truncate(jsonRaw, 800)}")
+
         val parsed = json.mapCatching { YubaParser.parseListFromApi(it) }
         var list = parsed.getOrDefault(emptyList())
+        DebugLog.d(TAG, "   JSON解析结果：${if (parsed.isSuccess) "✅成功，${list.size} 条帖子" else "❌失败：${parsed.exceptionOrNull()?.message}"}")
+        if (list.isNotEmpty()) {
+            list.take(3).forEachIndexed { i, p ->
+                val mediaSummary = p.media.groupBy { it.isVideo }.map { (isV, items) -> "${if (isV) "视频" else "图片"}:${items.size}" }.joinToString(",")
+                DebugLog.d(TAG, "     帖子[$i] id=${p.id} 作者=${p.author} 媒体=${mediaSummary} 内容前50字=${DebugLog.truncate(p.content, 50)}")
+            }
+        }
+
         var via = if (list.isNotEmpty()) "json" else "empty"
         val apiErr: String? = json.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
         val parseErr: String? = parsed.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
 
         // 2) 兜底：WebView DOM 抽
         if (list.isEmpty()) {
+            DebugLog.w(TAG, "2️⃣  JSON路径没拿到数据，走兜底：WebView 渲染鱼吧列表页抽 DOM")
             val htmlPosts = runCatching {
                 withContext(Dispatchers.Main.immediate) {
                     WebViewFetcher.fetchPosts(appCtx, groupId, apiPage)
@@ -69,6 +90,12 @@ object YubaRepository {
             list = got
             if (got.isNotEmpty()) {
                 via = "webview"
+                DebugLog.i(TAG, "   ✅ WebView兜底成功，拿到 ${got.size} 条帖子")
+                got.take(2).forEachIndexed { i, p ->
+                    DebugLog.d(TAG, "     帖子[$i] id=${p.id} 作者=${p.author} 媒体数=${p.media.size}")
+                }
+            } else {
+                DebugLog.e(TAG, "   ❌ WebView兜底也没拿到数据。异常=${htmlPosts.exceptionOrNull()?.message}")
             }
         }
 
@@ -80,8 +107,14 @@ object YubaRepository {
             p to pid
         }.take(15)
         if (toFix.isNotEmpty()) {
+            DebugLog.d(TAG, "3️⃣  开始并发补全 ${toFix.size} 个帖子的详情媒体（图片+视频直链）")
             val fixedMap = toFix.map { (p, pid) ->
-                async(Dispatchers.IO) { p.id to fetchPostMedia(pid) }
+                async(Dispatchers.IO) {
+                    val mediaBefore = p.media.size
+                    val got = fetchPostMedia(pid)
+                    DebugLog.d(TAG, "   帖子 id=$pid：详情补全前媒体=$mediaBefore，补到=${got.size}")
+                    p.id to got
+                }
             }.awaitAll().toMap()
             list = list.map { p ->
                 fixedMap[p.id]?.let { extra ->
@@ -106,44 +139,110 @@ object YubaRepository {
             }
         }
 
+        val totalMedia = list.sumOf { it.media.size }
+        val videoCount = list.sumOf { p -> p.media.count { it.isVideo } }
+        DebugLog.i(TAG, "🏁 拉取完成：链路=$via，帖子=${list.size}个，媒体总数=$totalMedia(视频=$videoCount)")
+        DebugLog.i(TAG, "   apiError=${apiErr ?: "无"}，parseError=${parseErr ?: "无"}")
+        DebugLog.i(TAG, "═══════════════════════════════════")
+
         FetchResult(posts = list, via = via, apiError = apiErr, parseError = parseErr)
     }
 
     /**
      * 进入帖子详情拿完整媒体。
-     * v1.9: API 拿 content 里的所有图片（多图帖补全）；
-     *      如果帖子是视频帖（extension_type=8 或 content 有 [video] 标签），
-     *      再走 WebView 拦截 m3u8 视频流（PC 版渲染 demand-video）。
+     * v2.0 核心改动：
+     *  - 帖子详情 API 不返回视频直链，但 content 里有 data-playurl 指向斗鱼视频分享页
+     *  - 提取 data-playurl → WebView 加载分享页 → 拦截 m3u8 请求
+     *  - 这是目前获取斗鱼视频直链最可靠的方式
+     *
+     * 流程：
+     *  1) 详情 API 拿图片 + 提取 data-playurl
+     *  2) 有 data-playurl → WebView 加载视频分享页 → 拦截 m3u8
+     *  3) 没有 data-playurl → 兜底走 PC 版帖子页 WebView
      */
     suspend fun fetchPostMedia(postId: String): List<MediaItem> = withContext(Dispatchers.IO) {
-        // 1) 先调 API 拿图片（content 里的所有 [img] 标签）
-        val apiResult = runCatching {
-            val raw = Net.api.postHead(postId)
-            val media = YubaParser.extractMediaFromDetail(raw, postId)
-            // 解析 JSON 判断是否视频帖
-            val isVideoPost = YubaParser.isVideoPost(raw)
-            Triple(raw, media, isVideoPost)
-        }.getOrNull()
+        DebugLog.d(TAG, "  📌 帖子详情补全 id=$postId")
 
-        val fromApi = apiResult?.second ?: emptyList()
-        val isVideoPost = apiResult?.third ?: false
+        // 1) 调 API 拿详情
+        val rawResult = runCatching { Net.api.postHead(postId) }
+        val raw = rawResult.getOrNull()
+        DebugLog.d(TAG, "     详情API：${if (rawResult.isSuccess) "✅成功(${raw?.length ?: 0}字符)" else "❌失败：${rawResult.exceptionOrNull()?.message}"}")
+        DebugLog.d(TAG, "     详情响应体前600字符：${DebugLog.truncate(raw, 600)}")
 
-        // 2) 如果没拿到视频直链，且帖子是视频帖，走 WebView 拦截 m3u8
+        val fromApi = raw?.let { YubaParser.extractMediaFromDetail(it, postId) } ?: emptyList()
         val hasRealVideo = fromApi.any { it.isVideo && it.url.isNotBlank() }
-        if (!hasRealVideo && (isVideoPost || fromApi.isEmpty())) {
-            val fromWeb = runCatching {
-                withContext(Dispatchers.Main.immediate) {
-                    WebViewFetcher.fetchPostDetail(appCtx, postId)
-                }
-            }.getOrDefault(emptyList())
-            // 合并：API 图片 + WebView 视频，按 URL 去重
-            val urls = fromApi.map { it.url }.toMutableSet()
-            val merged = fromApi.toMutableList()
-            for (m in fromWeb) {
-                if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
-            }
-            return@withContext merged
+        DebugLog.d(TAG, "     从详情 API 抽到媒体=${fromApi.size}个(含直链视频=$hasRealVideo)：${fromApi.joinToString { (if(it.isVideo) "🎥" else "🖼️") + DebugLog.truncate(it.url, 60) }}")
+
+        // 如果已经有视频直链（极少数情况），直接返回
+        if (hasRealVideo) {
+            DebugLog.d(TAG, "     ✅ 已有视频直链，直接返回")
+            return@withContext fromApi
         }
-        fromApi
+
+        // 2) 从 content 里提取 data-playurl（斗鱼视频分享页链接）
+        val playUrl = raw?.let { jsonStr ->
+            runCatching {
+                val content = kotlinx.serialization.json.Json.parseToJsonElement(jsonStr)
+                    .let { (it as? kotlinx.serialization.json.JsonObject) }
+                val dataObj = (content?.get("data") as? kotlinx.serialization.json.JsonObject) ?: content
+                val c = dataObj?.get("content")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                    ?: dataObj?.get("describe")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                    ?: ""
+                val extracted = YubaParser.extractVideoPlayUrl(c)
+                DebugLog.d(TAG, "     content长度=${c.length}，含data-playurl=${c.contains("data-playurl", true)}，提取结果=$extracted")
+                extracted
+            }.getOrElse { t ->
+                DebugLog.w(TAG, "     提取 data-playurl 异常：${t.message}")
+                null
+            }
+        }
+
+        // 3) 有 data-playurl → 加载视频分享页拦截 m3u8
+        if (!playUrl.isNullOrBlank()) {
+            DebugLog.i(TAG, "   🎬 发现data-playurl=$playUrl，WebView加载分享页拦截m3u8")
+            val videoMedia = runCatching {
+                withContext(Dispatchers.Main.immediate) {
+                    WebViewFetcher.fetchVideoFromSharePage(appCtx, playUrl, postId)
+                }
+            }.getOrElse { t ->
+                DebugLog.e(TAG, "   ❌ 拦截m3u8异常：${t.message}", t)
+                emptyList()
+            }
+            DebugLog.d(TAG, "     拦截到视频=${videoMedia.size}个：${videoMedia.joinToString { "🎥" + DebugLog.truncate(it.url, 80) }}")
+            if (videoMedia.isNotEmpty()) {
+                // 合并：API 图片 + WebView 视频
+                val urls = fromApi.map { it.url }.toMutableSet()
+                val merged = fromApi.toMutableList()
+                for (m in videoMedia) {
+                    if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
+                }
+                DebugLog.d(TAG, "     ✅ 合并后共 ${merged.size} 个媒体(图片+视频)，返回")
+                return@withContext merged
+            } else {
+                DebugLog.w(TAG, "     ⚠️ 分享页也没拦截到 m3u8，继续走下一条路")
+            }
+        } else {
+            DebugLog.d(TAG, "     没有 data-playurl，跳过分页拦截")
+        }
+
+        // 4) 兜底：走 PC 版帖子页 WebView（可能能抓到 demand-video）
+        DebugLog.w(TAG, "   🛡️ 兜底路径：加载 PC 版帖子页 WebView")
+        val fromWeb = runCatching {
+            withContext(Dispatchers.Main.immediate) {
+                WebViewFetcher.fetchPostDetail(appCtx, postId)
+            }
+        }.getOrElse { t ->
+            DebugLog.e(TAG, "   ❌ WebView兜底异常：${t.message}", t)
+            emptyList()
+        }
+        DebugLog.d(TAG, "     WebView兜底抽到媒体=${fromWeb.size}个：${fromWeb.joinToString { (if(it.isVideo) "🎥" else "🖼️") + DebugLog.truncate(it.url, 80) }}")
+
+        val urls = fromApi.map { it.url }.toMutableSet()
+        val merged = fromApi.toMutableList()
+        for (m in fromWeb) {
+            if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
+        }
+        DebugLog.d(TAG, "     最终返回 ${merged.size} 个媒体")
+        merged
     }
 }

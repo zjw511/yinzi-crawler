@@ -6,8 +6,10 @@ import android.os.Bundle
 import androidx.fragment.app.DialogFragment
 import androidx.fragment.app.activityViewModels
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
 import com.yinzi.crawler.R
 import com.yinzi.crawler.databinding.DialogSettingsBinding
+import com.yinzi.crawler.util.DebugLog
 import com.yinzi.crawler.util.Prefs
 
 class SettingsDialog : DialogFragment() {
@@ -33,6 +35,17 @@ class SettingsDialog : DialogFragment() {
         binding.btnAppLogin.setOnClickListener {
             LoginActivity.start(requireContext())
             dismiss()
+        }
+
+        // 查看调试日志
+        binding.btnDebugLog.setOnClickListener {
+            DebugLogDialog().show(parentFragmentManager, "debug_log")
+        }
+
+        // 清空日志
+        binding.btnClearLog.setOnClickListener {
+            DebugLog.clear()
+            Snackbar.make(binding.root, "调试日志已清空", Snackbar.LENGTH_SHORT).show()
         }
 
         return MaterialAlertDialogBuilder(requireContext())
