@@ -16,8 +16,22 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // 固定签名：内置 keystore，保证所有环境编译的 APK 签名一致，可直接覆盖升级
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'yinzi123'
+            keyAlias 'yinzi-debug'
+            keyPassword 'yinzi123'
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
