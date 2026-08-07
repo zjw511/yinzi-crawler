@@ -79,7 +79,7 @@ object DownloadManager {
         if (item.url.isBlank()) {
             return@withContext DownloadResult.Failure("URL 为空，无法下载")
         }
-        if (Prefs.isDownloaded(item.url)) {
+        if (Prefs.isDownloaded(item.url, item.postId, item.isVideo)) {
             return@withContext DownloadResult.Success(Uri.EMPTY, "already downloaded")
         }
         // 防止重复下载
@@ -208,7 +208,7 @@ object DownloadManager {
             tmpDir.deleteRecursively()
 
             setProgress(item.url, 100)
-            Prefs.markDownloaded(item.url)
+            Prefs.markDownloaded(item.url, item.postId, item.isVideo)
             kotlinx.coroutines.delay(500)
             clearProgress(item.url)
             DownloadResult.Success(savedUri, displayName)
@@ -289,7 +289,7 @@ object DownloadManager {
                 out.flush()
             }
             setProgress(item.url, 100)
-            Prefs.markDownloaded(item.url)
+            Prefs.markDownloaded(item.url, item.postId, item.isVideo)
             kotlinx.coroutines.delay(500)
             clearProgress(item.url)
             DownloadResult.Success(savedUri, displayName)

@@ -33,16 +33,29 @@ object Prefs {
     /** 未设置 Cookie → 使用匿名模式 */
     val isAnonymous: Boolean get() = cookie.isBlank()
 
-    /** 已下载的媒体 URL 集合（去重用） */
+    /** 已下载的媒体 URL 集合（会话内去重） */
     var downloaded: Set<String>
         get() = sp.getStringSet(KEY_DOWNLOADED, emptySet()) ?: emptySet()
         set(value) { sp.edit().putStringSet(KEY_DOWNLOADED, value).apply() }
 
-    fun markDownloaded(url: String) {
-        downloaded = downloaded + url
+    /** 已下载的视频帖子 ID 集合（跨会话去重，因为 m3u8 URL 每次拦截都带不同 token） */
+    var downloadedVideoPostIds: Set<String>
+        get() = sp.getStringSet(KEY_DOWNLOADED_VIDEO_POSTS, emptySet()) ?: emptySet()
+        set(value) { sp.edit().putStringSet(KEY_DOWNLOADED_VIDEO_POSTS, value).apply() }
+
+    fun markDownloaded(url: String, postId: String? = null, isVideo: Boolean = false) {
+        val urls = downloaded + url
+        downloaded = urls
+        if (isVideo && !postId.isNullOrBlank()) {
+            downloadedVideoPostIds = downloadedVideoPostIds + postId
+        }
     }
 
-    fun isDownloaded(url: String): Boolean = downloaded.contains(url)
+    fun isDownloaded(url: String, postId: String? = null, isVideo: Boolean = false): Boolean {
+        if (downloaded.contains(url)) return true
+        if (isVideo && !postId.isNullOrBlank() && downloadedVideoPostIds.contains(postId)) return true
+        return false
+    }
 
     // ============ WebView Cookie 辅助 ============
 
@@ -105,4 +118,5 @@ object Prefs {
     private const val KEY_GROUP_ID = "group_id"
     private const val KEY_COOKIE = "cookie"
     private const val KEY_DOWNLOADED = "downloaded"
+    private const val KEY_DOWNLOADED_VIDEO_POSTS = "downloaded_video_posts"
 }

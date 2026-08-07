@@ -57,7 +57,7 @@ class MediaAdapter(
                     pbItem.visibility = android.view.View.GONE
                     tvProgress.visibility = android.view.View.GONE
                 }
-                ivDone.visibility = if (Prefs.isDownloaded(item.url)) android.view.View.VISIBLE else android.view.View.GONE
+                ivDone.visibility = if (Prefs.isDownloaded(item.url, item.postId, item.isVideo)) android.view.View.VISIBLE else android.view.View.GONE
             }
             return
         }
@@ -70,7 +70,7 @@ class MediaAdapter(
             val thumb = item.thumbUrl ?: item.url
             Glide.with(ivThumb).load(thumb).centerCrop().into(ivThumb)
             ivVideoTag.visibility = if (item.isVideo) android.view.View.VISIBLE else android.view.View.GONE
-            ivDone.visibility = if (Prefs.isDownloaded(item.url)) android.view.View.VISIBLE else android.view.View.GONE
+            ivDone.visibility = if (Prefs.isDownloaded(item.url, item.postId, item.isVideo)) android.view.View.VISIBLE else android.view.View.GONE
             root.setOnClickListener { onClick(item, position) }
 
             val p = DownloadManager.progress.value[item.url]

@@ -211,7 +211,8 @@ class PreviewActivity : AppCompatActivity() {
     }
 
     private fun markIfDownloaded(url: String) {
-        if (Prefs.isDownloaded(url)) {
+        val item = mediaItem
+        if (Prefs.isDownloaded(url, item?.postId, item?.isVideo == true)) {
             b.tvStatus.visibility = View.VISIBLE
             b.tvStatus.text = "✓ 已保存"
         }
@@ -222,11 +223,11 @@ class PreviewActivity : AppCompatActivity() {
             Toast.makeText(this, "视频直链为空，无法下载", Toast.LENGTH_LONG).show()
             return
         }
-        if (Prefs.isDownloaded(url)) {
+        val item = mediaItem ?: return
+        if (Prefs.isDownloaded(url, item.postId, item.isVideo)) {
             Toast.makeText(this, "已经保存过了", Toast.LENGTH_SHORT).show()
             return
         }
-        val item = mediaItem ?: return
         val urls = arrayListOf(url)
         val types = arrayListOf(if (item.isVideo) 1 else 0)
         val postIds = arrayListOf(item.postId ?: "")
@@ -270,7 +271,7 @@ class PreviewActivity : AppCompatActivity() {
                         wasDownloading = false
                         b.pbPreview.visibility = View.GONE
                         b.pbPreview.isIndeterminate = false
-                        if (Prefs.isDownloaded(url)) {
+                        if (Prefs.isDownloaded(url, item.postId, item.isVideo)) {
                             b.tvStatus.visibility = View.VISIBLE
                             b.tvStatus.text = "✓ 下载完成"
                             Toast.makeText(this@PreviewActivity, "下载完成", Toast.LENGTH_SHORT).show()
@@ -279,7 +280,7 @@ class PreviewActivity : AppCompatActivity() {
                             b.tvStatus.text = "✗ 下载失败"
                             Toast.makeText(this@PreviewActivity, "下载失败", Toast.LENGTH_SHORT).show()
                         }
-                    } else if (Prefs.isDownloaded(url)) {
+                    } else if (Prefs.isDownloaded(url, item.postId, item.isVideo)) {
                         b.pbPreview.visibility = View.GONE
                         b.tvStatus.visibility = View.VISIBLE
                         b.tvStatus.text = "✓ 已保存"
