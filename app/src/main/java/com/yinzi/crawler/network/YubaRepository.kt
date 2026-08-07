@@ -99,15 +99,17 @@ object YubaRepository {
             }
         }
 
-        // 3) 详情补全：v1.9 起，所有帖子都进详情页补全（列表 API 的 imglist 最多 3 张，
-        //    多图帖的完整图片和视频直链只在详情 content 的 BBCode + 渲染后的 demand-video 里）。
-        //    并发执行避免阻塞；前 15 个帖子补全（覆盖首屏可见的帖子），其余保持列表的 3 张
+        // 3) 详情补全：只对需要补全的帖子调详情 API
+        //    - 视频帖（needsDetail=true，列表没抓到直链）
+        //    - 列表媒体为空的帖子（可能有多图）
+        //    已有图片的普通帖子直接用列表数据，不调详情（省 15 个请求）
         val toFix = list.mapNotNull { p ->
             val pid = p.media.firstOrNull()?.postId ?: p.id
-            p to pid
-        }.take(15)
+            val needsFix = p.media.any { it.isVideo && it.url.isBlank() } || p.media.isEmpty()
+            if (needsFix) p to pid else null
+        }
         if (toFix.isNotEmpty()) {
-            DebugLog.d(TAG, "3️⃣  开始并发补全 ${toFix.size} 个帖子的详情媒体（图片+视频直链）")
+            DebugLog.d(TAG, "3️⃣  只对 ${toFix.size} 个需要补全的帖子调详情API（其余直接用列表数据）")
             val fixedMap = toFix.map { (p, pid) ->
                 async(Dispatchers.IO) {
                     val mediaBefore = p.media.size
@@ -167,7 +169,6 @@ object YubaRepository {
         val rawResult = runCatching { Net.api.postHead(postId) }
         val raw = rawResult.getOrNull()
         DebugLog.d(TAG, "     详情API：${if (rawResult.isSuccess) "✅成功(${raw?.length ?: 0}字符)" else "❌失败：${rawResult.exceptionOrNull()?.message}"}")
-        DebugLog.d(TAG, "     详情响应体前600字符：${DebugLog.truncate(raw, 600)}")
 
         val fromApi = raw?.let { YubaParser.extractMediaFromDetail(it, postId) } ?: emptyList()
         val hasRealVideo = fromApi.any { it.isVideo && it.url.isNotBlank() }

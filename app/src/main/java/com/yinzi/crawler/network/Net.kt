@@ -45,13 +45,13 @@ object Net {
             .addInterceptor(HeaderInterceptor())
             .addInterceptor(
                 HttpLoggingInterceptor { message ->
-                    // 把 OkHttp 的 logging 也打到 DebugLog，方便 UI 层查看
+                    // 只记录请求行和响应行，不记录 body（BODY 级别会完整读取响应体，非常慢）
                     if (message.startsWith("<--") || message.startsWith("-->") || message.contains("END")) {
-                        DebugLog.d("OkHttp", DebugLog.truncate(message, 2000))
+                        DebugLog.d("OkHttp", DebugLog.truncate(message, 500))
                     }
                 }.apply {
-                    // BODY 级别：请求行 + 头 + 响应体（鱼吧 JSON 不大，直接打完整）
-                    level = HttpLoggingInterceptor.Level.BODY
+                    // HEADERS 级别：请求行 + 头 + 响应行，不读取 body（性能优先）
+                    level = HttpLoggingInterceptor.Level.HEADERS
                 }
             )
             .build()
@@ -81,12 +81,9 @@ object Net {
             }
 
             val rawCookie = Prefs.cookie.trim()
-            val cookieStatus = when {
-                rawCookie.isEmpty() -> "❌ 未设置 Cookie（匿名模式）"
-                else -> "✅ Cookie 已设置（${rawCookie.split(';').size} 个字段：${DebugLog.maskCookie(rawCookie)}）"
-            }
+            val cookieBrief = if (rawCookie.isEmpty()) "匿名" else "已登录(${rawCookie.split(';').size}字段)"
 
-            DebugLog.d(TAG_NET, "➡️ 请求 $method $shortUrl\nReferer=$referer\nCookie状态：$cookieStatus")
+            DebugLog.d(TAG_NET, "➡️ $method $shortUrl [$cookieBrief]")
 
             val req = orig.newBuilder()
                 .header("User-Agent", UA)
@@ -112,11 +109,6 @@ object Net {
             val cost = (System.nanoTime() - startNs) / 1_000_000
             val code = response.code
             val msg = response.message
-            val bodyLen = response.body?.contentLength()?.takeIf { it > 0 }
-                ?: response.peekBody(1).string().length.toLong()
-
-            // 读取一小段响应体给调试（不影响后续消费，因为是 peek）
-            val bodyPeek = try { response.peekBody(800).string() } catch (_: Throwable) { "" }
             val statusEmoji = when {
                 code in 200..299 -> "✅"
                 code in 300..399 -> "🔄"
@@ -125,7 +117,13 @@ object Net {
                 code >= 500 -> "💥"
                 else -> "⚠️"
             }
-            DebugLog.i(TAG_NET, "⬅️ 响应 $statusEmoji $code $msg 耗时 ${cost}ms 大小 ${bodyLen}字节\nURL=$shortUrl\n响应体前800字符：\n${DebugLog.truncate(bodyPeek, 800)}")
+            // 只在非 200 时 peek 响应体（peekBody 会额外读取一次，对大响应体性能影响大）
+            if (code in 200..299) {
+                DebugLog.i(TAG_NET, "⬅️ $statusEmoji $code 耗时 ${cost}ms $shortUrl")
+            } else {
+                val bodyPeek = try { response.peekBody(500).string() } catch (_: Throwable) { "" }
+                DebugLog.w(TAG_NET, "⬅️ $statusEmoji $code $msg 耗时 ${cost}ms $shortUrl\n响应：${DebugLog.truncate(bodyPeek, 500)}")
+            }
             return response
         }
     }
