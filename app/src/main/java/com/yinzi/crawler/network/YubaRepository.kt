@@ -226,6 +226,12 @@ object YubaRepository {
         }
 
         // 4) 兜底：走 PC 版帖子页 WebView（可能能抓到 demand-video）
+        // 优化：如果详情 API 已抽到图片且没有 data-playurl，说明是普通图片帖，
+        //      没必要再花 30 秒加载 WebView（视频帖才有 demand-video 组件）。
+        if (fromApi.isNotEmpty() && playUrl.isNullOrBlank()) {
+            DebugLog.d(TAG, "     ✅ 详情API已抽到${fromApi.size}个媒体且无data-playurl，图片帖跳过WebView兜底")
+            return@withContext fromApi
+        }
         DebugLog.w(TAG, "   🛡️ 兜底路径：加载 PC 版帖子页 WebView")
         val fromWeb = runCatching {
             withContext(Dispatchers.Main.immediate) {

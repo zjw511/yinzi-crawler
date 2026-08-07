@@ -72,6 +72,8 @@ object WebViewFetcher {
 
         // 同步 Cookie（匿名模式下会清空残留 Cookie；登录态注入用户自己的 Cookie）
         Prefs.syncToWebView()
+        // 针对当前 WebView 实例开启第三方 Cookie（传 null 会 NPE，必须传实例）
+        runCatching { android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true) }
         return wv
     }
 

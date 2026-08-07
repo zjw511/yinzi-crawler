@@ -54,7 +54,9 @@ object Prefs {
     fun syncToWebView() {
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
-        cm.setAcceptThirdPartyCookies(null, true)
+        // 注意：setAcceptThirdPartyCookies 需要有效的 WebView 实例，传 null 在部分设备会
+        // 触发底层 chromium 的 NPE（webView.getSettings() on null）。
+        // 第三方 Cookie 接受策略改由 WebViewFetcher.createWebView 针对每个实例单独开启。
         val hosts = listOf("yuba.douyu.com", ".yuba.douyu.com",
             "douyu.com", ".douyu.com", "www.douyu.com", ".douyucdn.cn")
         if (isAnonymous) {
