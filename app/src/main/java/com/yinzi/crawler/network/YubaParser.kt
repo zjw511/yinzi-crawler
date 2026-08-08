@@ -275,7 +275,6 @@ object YubaParser {
             //    鱼吧列表 API 的 imglist 最多只返回 3 张，多图帖的完整图片只在详情 content 的 BBCode 里
             val content = postObj["content"]?.toStr() ?: postObj["describe"]?.toStr() ?: ""
             DebugLog.d(TAG, "   content.length=${content.length}，含[img=${content.count("[img", true)}，含[video=${content.count("[video", true)}，含data-playurl=${content.contains("data-playurl", true)}")
-            DebugLog.d(TAG, "   content 前400字符：${DebugLog.truncate(content, 400)}")
             // 提取所有图片（不只是第一张）
             val allImgs = extractAllImagesFromContent(content, postId)
             DebugLog.d(TAG, "   从 content 里抽出 ${allImgs.size} 张图片(BBCode)")

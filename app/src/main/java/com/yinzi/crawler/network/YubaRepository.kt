@@ -62,7 +62,6 @@ object YubaRepository {
         }
         val jsonRaw = json.getOrNull()
         DebugLog.d(TAG, "   JSON接口结果：${if (json.isSuccess) "✅成功(${jsonRaw?.length ?: 0}字符)" else "❌失败：${json.exceptionOrNull()?.message ?: json.exceptionOrNull()?.javaClass?.simpleName}"}")
-        DebugLog.d(TAG, "   JSON响应体前800字符：${DebugLog.truncate(jsonRaw, 800)}")
 
         val parsed = json.mapCatching { YubaParser.parseListFromApi(it) }
         var list = parsed.getOrDefault(emptyList())
@@ -227,13 +226,15 @@ object YubaRepository {
         }
 
         // 4) 兜底：走 PC 版帖子页 WebView（可能能抓到 demand-video）
-        // 优化：如果详情 API 已抽到图片且没有 data-playurl，说明是普通图片帖，
-        //      没必要再花 30 秒加载 WebView（视频帖才有 demand-video 组件）。
-        if (fromApi.isNotEmpty() && playUrl.isNullOrBlank()) {
-            DebugLog.d(TAG, "     ✅ 详情API已抽到${fromApi.size}个媒体且无data-playurl，图片帖跳过WebView兜底")
+        // 优化：没有 data-playurl 时，只有当详情 API 里存在"待补全视频项"才跑 WebView。
+        //      图片帖（有图）和纯文字帖（无图无视频）都不加载 WebView，省 15-30 秒。
+        val hasPendingVideo = fromApi.any { it.isVideo && it.url.isBlank() }
+        if (playUrl.isNullOrBlank() && !hasPendingVideo) {
+            val why = if (fromApi.isNotEmpty()) "图片帖(${fromApi.size}图)" else "纯文字帖(0媒体)"
+            DebugLog.d(TAG, "     ✅ $why 且无data-playurl，跳过WebView兜底")
             return@withContext fromApi
         }
-        DebugLog.w(TAG, "   🛡️ 兜底路径：加载 PC 版帖子页 WebView")
+        DebugLog.w(TAG, "   🛡️ 兜底路径：加载 PC 版帖子页 WebView（待补全视频）")
         val fromWeb = runCatching {
             withContext(Dispatchers.Main.immediate) {
                 WebViewFetcher.fetchPostDetail(appCtx, postId)
