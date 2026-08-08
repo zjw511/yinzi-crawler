@@ -66,7 +66,11 @@ object WebViewFetcher {
         s.mediaPlaybackRequiresUserGesture = false
         s.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         s.cacheMode = WebSettings.LOAD_DEFAULT
-        s.userAgentString = DESKTOP_UA
+        // v2.15：不再强制 DESKTOP_UA，用 WebView 默认手机 UA
+        //   v1.4 能播视频就是靠手机 UA + 手机版 URL（yubam.douyu.com/post/{id}），
+        //   video.js 在手机 UA 下渲染原生 <video src=m3u8>，shouldInterceptRequest 能拦到。
+        //   v1.8 改用 DESKTOP_UA + PC 版 URL 后，斗鱼后来换 HLS.js+MSE 导致拦截失效。
+        // s.userAgentString = DESKTOP_UA
         s.allowContentAccess = true
         s.allowFileAccess = true
 
@@ -118,8 +122,14 @@ object WebViewFetcher {
         ctx: Context,
         postId: String
     ): List<MediaItem> = withContext(Dispatchers.Main) {
-        // PC 版帖子页（会 302 重定向到 /post-detail/{id}），demand-video 组件会请求 m3u8
-        val url = "https://yuba.douyu.com/p/$postId"
+        // v2.15：恢复 v1.4 的手机版帖子页 URL（yubam.douyu.com/post/{id}）
+        //   v1.4 能播视频就是靠手机版 video.js 播放器渲染 <video src=m3u8>，
+        //   shouldInterceptRequest 能拦到原生 <video> 请求的 m3u8。
+        //   v1.8 改成 PC 版 yuba.douyu.com/p/{id} 后，斗鱼后来把 PC 版播放器换成 HLS.js+MSE，
+        //   video.src 变成 blob: URL，shouldInterceptRequest 拦不到 fetch 请求的 m3u8。
+        //   现在改回手机版 URL，配合 WebView 默认手机 UA，让 video.js 渲染原生 <video>。
+        //   保留 performance API 兜底（万一手机版也用 HLS.js）。
+        val url = "https://yubam.douyu.com/post/$postId"
         val js = extractMediaJs()
         DebugLog.d(TAG, "🔍 fetchPostDetail：url=$url")
 
