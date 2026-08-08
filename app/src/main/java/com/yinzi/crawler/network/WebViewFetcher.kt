@@ -118,44 +118,54 @@ object WebViewFetcher {
         ctx: Context,
         postId: String
     ): List<MediaItem> = withContext(Dispatchers.Main) {
-        // PC 版帖子页，demand-video 组件会渲染 m3u8
+        // PC 版帖子页（会 302 重定向到 /post-detail/{id}），demand-video 组件会请求 m3u8
         val url = "https://yuba.douyu.com/p/$postId"
         val js = extractMediaJs()
         DebugLog.d(TAG, "🔍 fetchPostDetail：url=$url")
 
-        // 拦截到的视频直链（线程安全集合，shouldInterceptRequest 在后台线程回调）
+        // 拦截到的视频直链（shouldInterceptRequest 对 fetch/XHR 不稳定，作为补充）
         val interceptedVideos = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
         val result = CompletableDeferred<String>()
         val wv = createWebView(ctx)
         val main = Handler(Looper.getMainLooper())
-        var jsEvaluated = false
+        var finished = false
 
-        // 15 秒兜底：不管 onPageFinished 有没有触发，到点强制执行一次
+        // 20 秒兜底（必须先声明，finishRunnable 引用它）
         val timeout = Runnable {
-            if (!jsEvaluated) {
-                jsEvaluated = true
-                DebugLog.w(TAG, "   ⏰ 15s兜底超时，强制执行evaluateJavascript")
-                wv.evaluateJavascript(js) { s ->
-                    val res = jsonStripQuote(s)
-                    DebugLog.d(TAG, "   JS抽媒体结果(超时)：${res.length}字符，已拦截视频=${interceptedVideos.size}个")
-                    result.complete(res)
-                    wv.destroySafely()
+            if (!finished) {
+                finished = true
+                DebugLog.w(TAG, "   ⏰ 20s兜底超时，网络拦截=${interceptedVideos.size}个")
+                wv.evaluateJavascript(FEED_PERF_JS) { perfS ->
+                    val perfUrls = parseVideoUrlsFromJs(jsonStripQuote(perfS))
+                    interceptedVideos.addAll(perfUrls)
+                    wv.evaluateJavascript(js) { domS ->
+                        result.complete(jsonStripQuote(domS))
+                        wv.destroySafely()
+                    }
                 }
             }
         }
 
-        // onPageFinished 后 1 秒就执行 JS（不用硬等 15 秒）
-        val evaluateJsRunnable = Runnable {
-            if (jsEvaluated) return@Runnable
-            jsEvaluated = true
+        // v2.14：onPageFinished 后读 performance.getEntriesByType('resource') 已请求的 m3u8
+        //   斗鱼改用 HLS.js fetch 请求 m3u8，shouldInterceptRequest 拦不到，
+        //   performance API 记录了所有资源请求 URL（包括 fetch 请求的 m3u8）
+        val finishRunnable = Runnable {
+            if (finished) return@Runnable
+            finished = true
             main.removeCallbacks(timeout)
-            DebugLog.d(TAG, "   ⏱️  onPageFinished 后 1s，evaluateJavascript 抽媒体")
-            wv.evaluateJavascript(js) { s ->
-                val res = jsonStripQuote(s)
-                DebugLog.d(TAG, "   JS抽媒体结果：${res.length}字符，已拦截视频=${interceptedVideos.size}个")
-                result.complete(res)
-                wv.destroySafely()
+            DebugLog.d(TAG, "   ⏱️ onPageFinished 后 6s，读 performance + DOM，网络拦截=${interceptedVideos.size}个")
+            wv.evaluateJavascript(FEED_PERF_JS) { perfS ->
+                val perfUrls = parseVideoUrlsFromJs(jsonStripQuote(perfS))
+                DebugLog.d(TAG, "   performance读到视频URL=${perfUrls.size}个：${perfUrls.joinToString { DebugLog.truncate(it, 90) }}")
+                interceptedVideos.addAll(perfUrls)
+                // 再跑一次 DOM 抽取（图片 + video src 兜底）
+                wv.evaluateJavascript(js) { domS ->
+                    val res = jsonStripQuote(domS)
+                    DebugLog.d(TAG, "   JS抽媒体结果：${res.length}字符，最终视频URL=${interceptedVideos.size}个")
+                    result.complete(res)
+                    wv.destroySafely()
+                }
             }
         }
 
@@ -163,7 +173,6 @@ object WebViewFetcher {
             override fun shouldInterceptRequest(
                 view: WebView?, request: WebResourceRequest?
             ): android.webkit.WebResourceResponse? {
-                // 记录所有视频流请求（m3u8/mp4/flv），不拦截让请求正常走
                 val u = request?.url?.toString() ?: return null
                 val lower = u.lowercase()
                 if (lower.contains(".m3u8") || lower.contains(".mp4") ||
@@ -176,10 +185,10 @@ object WebViewFetcher {
 
             override fun onPageFinished(view: WebView?, u: String?) {
                 DebugLog.d(TAG, "   ✅ onPageFinished：$u")
-                if (jsEvaluated) return
-                // 页面重定向会触发多次 onPageFinished，每次都先清掉上次的延迟任务
-                main.removeCallbacks(evaluateJsRunnable)
-                main.postDelayed(evaluateJsRunnable, 1000L) // 1 秒后执行 JS
+                if (finished) return
+                main.removeCallbacks(finishRunnable)
+                // demand-video 初始化 + getVideoPlayInfos + m3u8 请求约需 1.5-3s，等 6s 留余量
+                main.postDelayed(finishRunnable, 6000L)
             }
 
             override fun onReceivedError(
@@ -190,26 +199,27 @@ object WebViewFetcher {
         }
         wv.webChromeClient = WebChromeClient()
 
-        main.postDelayed(timeout, 15000L)
+        main.postDelayed(timeout, 20000L)
         wv.loadUrl(url)
-        DebugLog.d(TAG, "   🚀 开始加载url，15s兜底超时")
+        DebugLog.d(TAG, "   🚀 开始加载url，20s兜底超时")
 
         val jsonStr = try {
-            withTimeout(33000L) { result.await() }
+            withTimeout(25000L) { result.await() }
         } catch (t: Throwable) {
             DebugLog.e(TAG, "   ❌ withTimeout 异常：${t.message}")
             ""
         }.also {
             main.removeCallbacks(timeout)
+            main.removeCallbacks(finishRunnable)
             wv.destroySafely()
         }
 
-        // 合并：DOM 抽取 + 网络拦截
+        // 合并：DOM 抽取 + 网络拦截 + performance
         val fromDom = if (jsonStr.isNotBlank())
             runCatching { parseMediaJson(jsonStr, postId) }.getOrDefault(emptyList())
         else emptyList()
         val fromNet = interceptedVideos.map { MediaItem(MediaType.VIDEO, it, postId = postId) }
-        DebugLog.d(TAG, "   结果：DOM抽=${fromDom.size}, 网络拦截=${fromNet.size}")
+        DebugLog.d(TAG, "   结果：DOM抽=${fromDom.size}, 网络拦截+performance=${fromNet.size}")
         // 去重合并（优先 DOM 里有封面的，再补网络拦截的）
         val seen = mutableSetOf<String>()
         val merged = mutableListOf<MediaItem>()
@@ -240,47 +250,59 @@ object WebViewFetcher {
         val result = CompletableDeferred<String>()
         val wv = createWebView(ctx)
         val main = Handler(Looper.getMainLooper())
-        var jsEvaluated = false
+        var finished = false
 
-        // 15 秒兜底：不管 onPageFinished 情况，到点强制收尾
+        // 18 秒兜底（必须先声明，finishRunnable 引用它）
         val timeout = Runnable {
-            if (!jsEvaluated) {
-                jsEvaluated = true
-                DebugLog.w(TAG, "   ⏰ 15s兜底超时，共拦截 ${interceptedUrls.size} 个链接")
-                result.complete("done")
-                wv.destroySafely()
+            if (!finished) {
+                finished = true
+                DebugLog.w(TAG, "   ⏰ 18s兜底超时，网络拦截=${interceptedUrls.size}个")
+                wv.evaluateJavascript(FEED_PERF_JS) { perfS ->
+                    val perfUrls = parseVideoUrlsFromJs(jsonStripQuote(perfS))
+                    interceptedUrls.addAll(perfUrls)
+                    DebugLog.d(TAG, "   兜底读 performance=${perfUrls.size}个，最终=${interceptedUrls.size}个")
+                    result.complete("done")
+                    wv.destroySafely()
+                }
             }
         }
 
-        // onPageFinished 后 3 秒取 player.src（demand-video 初始化比普通图片慢一点）
-        val evaluateJsRunnable = Runnable {
-            if (jsEvaluated) return@Runnable
-            jsEvaluated = true
+        // v2.14：主路径用 performance API 读 m3u8（shouldInterceptRequest 拦不到 HLS.js fetch 请求）
+        val finishRunnable = Runnable {
+            if (finished) return@Runnable
+            finished = true
             main.removeCallbacks(timeout)
-            DebugLog.d(TAG, "   ⏱️  onPageFinished 后 3s，兜底 evaluateJavascript 取 player.src，已拦截=${interceptedUrls.size}个")
-            wv.evaluateJavascript("""
-                (function(){
-                    try {
-                        var els = document.querySelectorAll('demand-video');
-                        for(var i=0;i<els.length;i++){
-                            var el = els[i];
-                            var p = el.player || (el.shadowRoot ? el.shadowRoot.querySelector('video') : null);
-                            if(el.player && el.player.src) return el.player.src;
-                            if(p && p.src) return p.src;
-                            if(p && p.currentSrc) return p.currentSrc;
-                        }
-                        var v = document.querySelector('video');
-                        if(v && v.src) return v.src;
-                        return '';
-                    } catch(e) { return 'ERROR:'+e.message; }
-                })();
-            """) { s ->
-                val jsUrl = jsonStripQuote(s)
-                DebugLog.d(TAG, "   JS兜底结果：${if(jsUrl.isBlank())"(空)" else DebugLog.truncate(jsUrl, 120)}")
-                if (jsUrl.isNotBlank() && jsUrl.startsWith("http")) interceptedUrls.add(jsUrl)
-                DebugLog.d(TAG, "   完成，共拦截到视频URL=${interceptedUrls.size}个")
-                result.complete("done")
-                wv.destroySafely()
+            DebugLog.d(TAG, "   ⏱️ onPageFinished 后 5s，读 performance + player.src，网络拦截=${interceptedUrls.size}个")
+            // 1) 读 performance entries
+            wv.evaluateJavascript(FEED_PERF_JS) { perfS ->
+                val perfUrls = parseVideoUrlsFromJs(jsonStripQuote(perfS))
+                DebugLog.d(TAG, "   performance读到视频URL=${perfUrls.size}个：${perfUrls.joinToString { DebugLog.truncate(it, 90) }}")
+                interceptedUrls.addAll(perfUrls)
+                // 2) 兜底取 demand-video player.src
+                wv.evaluateJavascript("""
+                    (function(){
+                        try {
+                            var els = document.querySelectorAll('demand-video');
+                            for(var i=0;i<els.length;i++){
+                                var el = els[i];
+                                var p = el.player || (el.shadowRoot ? el.shadowRoot.querySelector('video') : null);
+                                if(el.player && el.player.src) return el.player.src;
+                                if(p && p.src) return p.src;
+                                if(p && p.currentSrc) return p.currentSrc;
+                            }
+                            var v = document.querySelector('video');
+                            if(v && v.src) return v.src;
+                            return '';
+                        } catch(e) { return 'ERROR:'+e.message; }
+                    })();
+                """) { s ->
+                    val jsUrl = jsonStripQuote(s)
+                    DebugLog.d(TAG, "   player.src结果：${if(jsUrl.isBlank())"(空)" else DebugLog.truncate(jsUrl, 120)}")
+                    if (jsUrl.isNotBlank() && jsUrl.startsWith("http")) interceptedUrls.add(jsUrl)
+                    DebugLog.d(TAG, "   完成，共视频URL=${interceptedUrls.size}个")
+                    result.complete("done")
+                    wv.destroySafely()
+                }
             }
         }
 
@@ -301,10 +323,10 @@ object WebViewFetcher {
 
             override fun onPageFinished(view: WebView?, u: String?) {
                 DebugLog.d(TAG, "   ✅ 分享页onPageFinished：$u，当前已拦截=${interceptedUrls.size}个")
-                if (jsEvaluated) return
-                // 重定向会多次触发 onPageFinished，重置延迟
-                main.removeCallbacks(evaluateJsRunnable)
-                main.postDelayed(evaluateJsRunnable, 3000L) // 3 秒后取 player
+                if (finished) return
+                main.removeCallbacks(finishRunnable)
+                // 分享页 demand-video 初始化约 2-3s，等 5s 留余量
+                main.postDelayed(finishRunnable, 5000L)
             }
 
             override fun onReceivedError(
@@ -315,22 +337,22 @@ object WebViewFetcher {
         }
         wv.webChromeClient = WebChromeClient()
 
-        main.postDelayed(timeout, 15000L)
+        main.postDelayed(timeout, 18000L)
         wv.loadUrl(videoPageUrl)
-        DebugLog.d(TAG, "   🚀 已loadUrl，15s兜底超时")
+        DebugLog.d(TAG, "   🚀 已loadUrl，18s兜底超时")
 
         try {
-            withTimeout(28000L) { result.await() }
+            withTimeout(22000L) { result.await() }
         } catch (t: Throwable) {
             DebugLog.e(TAG, "   ❌ withTimeout 异常：${t.message}")
             ""
         }.also {
             main.removeCallbacks(timeout)
+            main.removeCallbacks(finishRunnable)
             wv.destroySafely()
         }
 
         DebugLog.d(TAG, "   最终拦截视频URL=${interceptedUrls.size}个：${interceptedUrls.joinToString { "\n     - $it" }}")
-        // 把拦截到的 URL 转成 MediaItem
         interceptedUrls.map { url -> MediaItem(MediaType.VIDEO, url, postId = postId) }
     }
 
