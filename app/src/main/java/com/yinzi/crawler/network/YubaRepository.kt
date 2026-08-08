@@ -187,15 +187,19 @@ object YubaRepository {
         // 1.5) v2.11：调 feed 动态 API 判断视频帖 + 拿 feed_id/vid/封面
         //    列表/详情 API 的 video 字段对视频帖也是空字符串，content 无 data-playurl，
         //    视频实际在 feed 动态里（getFeedInfoByPostId 返回 image_video_list[].type=2）。
+        // v2.13 修复：feed 页拦截失败时不要 return 短路，把封面占位加到 fromApi 后
+        //   继续走下面的 data-playurl + 分享页 + PC 版兜底。
+        //   v2.12 的 bug：return 占位短路了原本正常的 data-playurl 路径，导致 v2.10 能播的视频现在只能看封面。
         val feedInfoRaw = runCatching { Net.api.feedInfoByPostId(postId) }
         val feedInfo = feedInfoRaw.getOrNull()
         val feedVideo = feedInfo?.let { YubaParser.extractFeedVideoInfo(it) }
         DebugLog.d(TAG, "     feed动态API：${if (feedInfoRaw.isSuccess) "✅成功(${feedInfo?.length ?: 0}字符)" else "❌${feedInfoRaw.exceptionOrNull()?.message}"}，是否视频帖=${feedVideo != null}")
 
+        // fromApi 可变引用：feed 页 / 分享页 / 兜底都可能往里面加媒体
+        var mediaBase = fromApi.toMutableList()
+
         if (feedVideo != null) {
-            // 用 feed_id 加载 feed 页面拦截 m3u8（feed 页是 SPA，前端会调 getVideoPlayInfos 拿带 sign 的 m3u8）
             val fid = feedVideo.feedId.ifBlank {
-                // feed_id 缺失时从详情 raw 里兜底取
                 runCatching {
                     val c = kotlinx.serialization.json.Json.parseToJsonElement(raw ?: "")
                     val d = (c as? kotlinx.serialization.json.JsonObject)?.get("data") as? kotlinx.serialization.json.JsonObject
@@ -213,25 +217,22 @@ object YubaRepository {
                     DebugLog.e(TAG, "   ❌ feed页拦截m3u8异常：${t.message}", t)
                     emptyList()
                 }
-                DebugLog.d(TAG, "     feed页拦截到视频=${feedMedia.size}个：${feedMedia.joinToString { "🎥" + DebugLog.truncate(it.url, 80) }}")
-                if (feedMedia.isNotEmpty()) {
-                    // 合并：API 图片 + feed 页 m3u8（去重）
-                    val urls = fromApi.map { it.url }.toMutableSet()
-                    val merged = fromApi.toMutableList()
-                    for (m in feedMedia) {
-                        if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
-                    }
-                    DebugLog.d(TAG, "     ✅ feed视频合并后 ${merged.size} 个媒体，返回")
-                    return@withContext merged
+                val realFeedVideo = feedMedia.filter { it.url.isNotBlank() }
+                DebugLog.d(TAG, "     feed页拦截到视频=${feedMedia.size}个(含直链=${realFeedVideo.size}个)：${feedMedia.joinToString { "🎥" + DebugLog.truncate(it.url, 80) }}")
+                if (realFeedVideo.isNotEmpty()) {
+                    // 成功：合并 return
+                    val urls = mediaBase.map { it.url }.toMutableSet()
+                    for (m in realFeedVideo) if (urls.add(m.url)) mediaBase.add(m)
+                    DebugLog.d(TAG, "     ✅ feed视频合并后 ${mediaBase.size} 个媒体，返回")
+                    return@withContext mediaBase
                 }
-                // feed 页没拦截到 m3u8：插入视频占位（带封面），列表显示视频封面，
-                // 用户点击后 PreviewActivity 会再调本函数补全（m3u8 sign 刷新后可能成功）
-                DebugLog.w(TAG, "     ⚠️ feed页没拦截到 m3u8，插入视频占位(带封面)让预览页再补全")
-                val placeholder = fromApi.toMutableList()
-                if (placeholder.none { it.isVideo }) {
-                    placeholder.add(MediaItem(MediaType.VIDEO, url = "", thumbUrl = feedVideo.cover, postId = postId, needsDetail = true))
+                // feed 页没拿到 m3u8：把封面占位加进 mediaBase，继续往下走 data-playurl
+                DebugLog.w(TAG, "     ⚠️ feed页没拦截到直链 m3u8，把封面占位加入媒体后继续走分享页/兜底")
+                if (mediaBase.none { it.isVideo }) {
+                    mediaBase.add(MediaItem(MediaType.VIDEO, url = "", thumbUrl = feedVideo.cover, postId = postId, needsDetail = true))
                 }
-                return@withContext placeholder
+                // ← v2.12 这里错误地 return@withContext，导致短路了下面的 data-playurl 路径
+                // ← v2.13 修复：不 return，继续往下走
             }
         }
 
@@ -272,14 +273,17 @@ object YubaRepository {
                 allVideoMedia.addAll(videoMedia)
             }
             if (allVideoMedia.isNotEmpty()) {
-                // 合并：API 图片 + WebView 视频（去重）
-                val urls = fromApi.map { it.url }.toMutableSet()
-                val merged = fromApi.toMutableList()
+                // 合并：API 图片(+feed 占位) + 分享页 m3u8（去重）
+                val urls = mediaBase.map { it.url }.toMutableSet()
+                val merged = mediaBase.toMutableList()
                 for (m in allVideoMedia) {
                     if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
                 }
-                DebugLog.d(TAG, "     ✅ 合并后共 ${merged.size} 个媒体(图片+视频)，返回")
-                return@withContext merged
+                // 如果分享页拿到了直链，移除 url 为空的占位视频
+                val hasReal = merged.any { it.isVideo && it.url.isNotBlank() }
+                val final = if (hasReal) merged.filter { !it.isVideo || it.url.isNotBlank() } else merged
+                DebugLog.d(TAG, "     ✅ 分享页合并后共 ${final.size} 个媒体(图片+视频)，返回")
+                return@withContext final
             } else {
                 DebugLog.w(TAG, "     ⚠️ 分享页也没拦截到 m3u8，继续走下一条路")
             }
@@ -288,13 +292,11 @@ object YubaRepository {
         }
 
         // 4) 兜底：走 PC 版帖子页 WebView（可能能抓到 demand-video）
-        // 优化：没有 data-playurl 时，只有当详情 API 里存在"待补全视频项"才跑 WebView。
-        //      图片帖（有图）和纯文字帖（无图无视频）都不加载 WebView，省 15-30 秒。
-        val hasPendingVideo = fromApi.any { it.isVideo && it.url.isBlank() }
+        val hasPendingVideo = mediaBase.any { it.isVideo && it.url.isBlank() }
         if (playUrls.isEmpty() && !hasPendingVideo) {
-            val why = if (fromApi.isNotEmpty()) "图片帖(${fromApi.size}图)" else "纯文字帖(0媒体)"
+            val why = if (mediaBase.isNotEmpty()) "图片帖(${mediaBase.count{!it.isVideo}}图)" else "纯文字帖(0媒体)"
             DebugLog.d(TAG, "     ✅ $why 且无data-playurl，跳过WebView兜底")
-            return@withContext fromApi
+            return@withContext mediaBase
         }
         DebugLog.w(TAG, "   🛡️ 兜底路径：加载 PC 版帖子页 WebView（待补全视频）")
         val fromWeb = runCatching {
@@ -307,12 +309,14 @@ object YubaRepository {
         }
         DebugLog.d(TAG, "     WebView兜底抽到媒体=${fromWeb.size}个：${fromWeb.joinToString { (if(it.isVideo) "🎥" else "🖼️") + DebugLog.truncate(it.url, 80) }}")
 
-        val urls = fromApi.map { it.url }.toMutableSet()
-        val merged = fromApi.toMutableList()
+        val urls = mediaBase.map { it.url }.toMutableSet()
+        val merged = mediaBase.toMutableList()
         for (m in fromWeb) {
             if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
         }
-        DebugLog.d(TAG, "     最终返回 ${merged.size} 个媒体")
-        merged
+        val hasReal = merged.any { it.isVideo && it.url.isNotBlank() }
+        val final = if (hasReal) merged.filter { !it.isVideo || it.url.isNotBlank() } else merged
+        DebugLog.d(TAG, "     最终返回 ${final.size} 个媒体")
+        final
     }
 }
