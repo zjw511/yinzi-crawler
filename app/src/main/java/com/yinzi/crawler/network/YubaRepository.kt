@@ -98,17 +98,18 @@ object YubaRepository {
             }
         }
 
-        // 3) 详情补全：只对需要补全的帖子调详情 API
+        // 3) 详情补全：对需要补全的帖子调详情 API
         //    - 视频帖（needsDetail=true，列表没抓到直链）
-        //    - 列表媒体为空的帖子（可能有多图）
-        //    已有图片的普通帖子直接用列表数据，不调详情（省 15 个请求）
+        //    - 列表媒体少于 3 个（可能详情里有 BBCode 多图 / 有 data-playurl 视频，列表API看不到）
+        //      （media.size >= 3 的多图帖通常就是纯图片，不会藏视频，直接跳过省请求）
         val toFix = list.mapNotNull { p ->
             val pid = p.media.firstOrNull()?.postId ?: p.id
-            val needsFix = p.media.any { it.isVideo && it.url.isBlank() } || p.media.isEmpty()
+            val needsFix = p.media.any { it.isVideo && it.url.isBlank() } || p.media.size < 3
             if (needsFix) p to pid else null
         }
         if (toFix.isNotEmpty()) {
-            DebugLog.d(TAG, "3️⃣  只对 ${toFix.size} 个需要补全的帖子调详情API（其余直接用列表数据）")
+            val skipped = list.size - toFix.size
+            DebugLog.d(TAG, "3️⃣  对 ${toFix.size} 个帖子调详情API补全（${skipped}个>=3图纯图片帖跳过）")
             val fixedMap = toFix.map { (p, pid) ->
                 async(Dispatchers.IO) {
                     val mediaBefore = p.media.size
