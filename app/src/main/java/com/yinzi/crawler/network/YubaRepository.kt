@@ -98,18 +98,16 @@ object YubaRepository {
             }
         }
 
-        // 3) 详情补全：对需要补全的帖子调详情 API
-        //    - 视频帖（needsDetail=true，列表没抓到直链）
-        //    - 列表媒体少于 3 个（可能详情里有 BBCode 多图 / 有 data-playurl 视频，列表API看不到）
-        //      （media.size >= 3 的多图帖通常就是纯图片，不会藏视频，直接跳过省请求）
-        val toFix = list.mapNotNull { p ->
+        // 3) 详情补全：对所有帖子调详情 API
+        //    详情 API 是并行的（~300ms 每个），30 个帖子并行约 1-2 秒完成
+        //    列表 API 的 video 字段可能为 null 但详情 API 返回 video=true
+        //    或详情 content 里有 data-playurl，只有调详情才能发现视频
+        val toFix = list.map { p ->
             val pid = p.media.firstOrNull()?.postId ?: p.id
-            val needsFix = p.media.any { it.isVideo && it.url.isBlank() } || p.media.size < 3
-            if (needsFix) p to pid else null
+            p to pid
         }
         if (toFix.isNotEmpty()) {
-            val skipped = list.size - toFix.size
-            DebugLog.d(TAG, "3️⃣  对 ${toFix.size} 个帖子调详情API补全（${skipped}个>=3图纯图片帖跳过）")
+            DebugLog.d(TAG, "3️⃣  对全部 ${toFix.size} 个帖子调详情API补全")
             val fixedMap = toFix.map { (p, pid) ->
                 async(Dispatchers.IO) {
                     val mediaBefore = p.media.size
@@ -125,10 +123,15 @@ object YubaRepository {
                         val existingUrls = p.media.map { it.url }.toMutableSet()
                         val merged = p.media.toMutableList()
                         for (m in extra) {
-                            if (m.url.isBlank()) continue
+                            // 视频 needsDetail 占位项（url 为空）也要保留，
+                            // 用户点击后会走 PreviewActivity 实时解析
+                            if (m.url.isBlank()) {
+                                if (m.isVideo) merged.add(m)
+                                continue
+                            }
                             if (existingUrls.add(m.url)) merged.add(m)
                         }
-                        // 如果详情补到了视频直链，移除列表里 url 为空的视频占位
+                        // 如果详情补到了视频直链，移除 url 为空的视频占位
                         val hasRealVideo = merged.any { it.isVideo && it.url.isNotBlank() }
                         if (hasRealVideo) {
                             val filtered = merged.filter { !it.isVideo || it.url.isNotBlank() }
