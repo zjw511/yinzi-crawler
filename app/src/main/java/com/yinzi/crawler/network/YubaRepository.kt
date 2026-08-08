@@ -2,6 +2,7 @@ package com.yinzi.crawler.network
 
 import android.content.Context
 import com.yinzi.crawler.model.MediaItem
+import com.yinzi.crawler.model.MediaType
 import com.yinzi.crawler.model.Post
 import com.yinzi.crawler.util.DebugLog
 import com.yinzi.crawler.util.Prefs
@@ -181,6 +182,57 @@ object YubaRepository {
         if (hasRealVideo) {
             DebugLog.d(TAG, "     ✅ 已有视频直链，直接返回")
             return@withContext fromApi
+        }
+
+        // 1.5) v2.11：调 feed 动态 API 判断视频帖 + 拿 feed_id/vid/封面
+        //    列表/详情 API 的 video 字段对视频帖也是空字符串，content 无 data-playurl，
+        //    视频实际在 feed 动态里（getFeedInfoByPostId 返回 image_video_list[].type=2）。
+        val feedInfoRaw = runCatching { Net.api.feedInfoByPostId(postId) }
+        val feedInfo = feedInfoRaw.getOrNull()
+        val feedVideo = feedInfo?.let { YubaParser.extractFeedVideoInfo(it) }
+        DebugLog.d(TAG, "     feed动态API：${if (feedInfoRaw.isSuccess) "✅成功(${feedInfo?.length ?: 0}字符)" else "❌${feedInfoRaw.exceptionOrNull()?.message}"}，是否视频帖=${feedVideo != null}")
+
+        if (feedVideo != null) {
+            // 用 feed_id 加载 feed 页面拦截 m3u8（feed 页是 SPA，前端会调 getVideoPlayInfos 拿带 sign 的 m3u8）
+            val fid = feedVideo.feedId.ifBlank {
+                // feed_id 缺失时从详情 raw 里兜底取
+                runCatching {
+                    val c = kotlinx.serialization.json.Json.parseToJsonElement(raw ?: "")
+                    val d = (c as? kotlinx.serialization.json.JsonObject)?.get("data") as? kotlinx.serialization.json.JsonObject
+                    (d?.get("feed_id_str")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                        ?: d?.get("feed_id")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }).orEmpty()
+                }.getOrDefault("")
+            }
+            if (fid.isNotBlank()) {
+                DebugLog.i(TAG, "   🎬 feed视频帖 feed_id=$fid，加载 feed 页拦截 m3u8")
+                val feedMedia = runCatching {
+                    withContext(Dispatchers.Main.immediate) {
+                        WebViewFetcher.fetchVideoFromFeedPage(appCtx, fid, postId)
+                    }
+                }.getOrElse { t ->
+                    DebugLog.e(TAG, "   ❌ feed页拦截m3u8异常：${t.message}", t)
+                    emptyList()
+                }
+                DebugLog.d(TAG, "     feed页拦截到视频=${feedMedia.size}个：${feedMedia.joinToString { "🎥" + DebugLog.truncate(it.url, 80) }}")
+                if (feedMedia.isNotEmpty()) {
+                    // 合并：API 图片 + feed 页 m3u8（去重）
+                    val urls = fromApi.map { it.url }.toMutableSet()
+                    val merged = fromApi.toMutableList()
+                    for (m in feedMedia) {
+                        if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
+                    }
+                    DebugLog.d(TAG, "     ✅ feed视频合并后 ${merged.size} 个媒体，返回")
+                    return@withContext merged
+                }
+                // feed 页没拦截到 m3u8：插入视频占位（带封面），列表显示视频封面，
+                // 用户点击后 PreviewActivity 会再调本函数补全（m3u8 sign 刷新后可能成功）
+                DebugLog.w(TAG, "     ⚠️ feed页没拦截到 m3u8，插入视频占位(带封面)让预览页再补全")
+                val placeholder = fromApi.toMutableList()
+                if (placeholder.none { it.isVideo }) {
+                    placeholder.add(MediaItem(MediaType.VIDEO, url = "", thumbUrl = feedVideo.cover, postId = postId, needsDetail = true))
+                }
+                return@withContext placeholder
+            }
         }
 
         // 2) 从 content 里提取所有 data-playurl（多视频帖可能有多个）

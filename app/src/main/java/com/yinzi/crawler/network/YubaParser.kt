@@ -454,6 +454,38 @@ object YubaParser {
         return urls
     }
 
+    /** feed 动态里的视频信息（来自 getFeedInfoByPostId，用于构造 feed 页面拦截 m3u8） */
+    data class FeedVideoInfo(
+        val feedId: String,   // feed_id
+        val vid: String,      // 视频 file_id
+        val cover: String?    // 视频封面
+    )
+
+    /** 从 getFeedInfoByPostId 返回解析视频信息
+     *  返回 null 表示非视频帖（图片帖 image_video_list[].type=1，含 images）
+     *  视频帖 image_video_list[].type=2，含 video.file_id + cover */
+    fun extractFeedVideoInfo(jsonStr: String): FeedVideoInfo? {
+        runCatching { Json.parseToJsonElement(jsonStr) }.getOrNull()?.let {
+            val root = it as? JsonObject ?: return@let
+            val data = root["data"] as? JsonObject ?: return@let
+            val feedId = data["feed_id"]?.toStr()?.ifBlank { null }
+                ?: data["feed_id_str"]?.toStr().orEmpty()
+            val list = data["image_video_list"] as? JsonArray ?: return@let
+            for (item in list) {
+                val o = item as? JsonObject ?: continue
+                val type = o["type"]?.toStr()?.toIntOrNull() ?: continue
+                if (type != 2) continue   // type=2 才是视频
+                val video = o["video"] as? JsonObject ?: continue
+                val vid = video["file_id"]?.toStr().orEmpty()
+                if (vid.isBlank()) continue
+                val cover = (video["cover"] as? JsonObject)?.get("url")?.toStr()
+                DebugLog.d(TAG, "     ✅ feed视频：feedId=$feedId vid=$vid cover=${DebugLog.truncate(cover ?: "", 60)}")
+                return FeedVideoInfo(feedId, vid, cover)
+            }
+        }
+        return null
+    }
+
     private fun isImageUrl(s: String): Boolean {
         if (s.isBlank() || !s.startsWith("http")) return false
         val l = s.lowercase()

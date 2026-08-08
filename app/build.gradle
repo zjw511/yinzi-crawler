@@ -11,8 +11,8 @@ android {
         applicationId "com.yinzi.crawler"
         minSdk 26
         targetSdk 34
-        versionCode 20
-        versionName "2.10"
+        versionCode 22
+        versionName "2.12"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -42,6 +42,11 @@ android {
     }
     kotlinOptions { jvmTarget = '17' }
     buildFeatures { viewBinding true }
+    // lint 工具在 JDK21 下初始化失败，禁用 release 检查（不影响 APK 生成）
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
 }
 
 dependencies {

@@ -42,4 +42,11 @@ interface YubaApi {
     /** 鱼吧头部信息：名称、头像、banner、粉丝数等，用于设置里的 group_id 有效性检查 */
     @GET("/wbapi/web/group/head")
     suspend fun groupHead(@Query("group_id") groupId: String): String
+
+    /** 通过 post_id 获取 feed 动态信息（v2.11：判断视频帖 + 拿 vid/封面）
+     *  GET https://yuba.douyu.com/wgapi/yubanc/api/feed/getFeedInfoByPostId?post_id=xxx&origin=0
+     *  返回 data.image_video_list：[{type:2(视频)且video:{file_id,cover} | type:1(图片)且images:{images:[...]}}]
+     *  注意：此接口在 yuba.douyu.com（PC版域名），用完整 URL 绕过 yubam BASE */
+    @GET("https://yuba.douyu.com/wgapi/yubanc/api/feed/getFeedInfoByPostId")
+    suspend fun feedInfoByPostId(@Query("post_id") postId: String, @Query("origin") origin: Int = 0): String
 }

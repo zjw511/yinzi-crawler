@@ -334,6 +334,150 @@ object WebViewFetcher {
         interceptedUrls.map { url -> MediaItem(MediaType.VIDEO, url, postId = postId) }
     }
 
+    /**
+     * 加载鱼吧 feed 动态页（yuba.douyu.com/feed/{feedId}），获取视频 m3u8 直链。
+     *
+     * v2.12 核心修复：feed 页 m3u8 由 HLS.js 通过 fetch/XHR 请求（initiatorType=xmlhttprequest），
+     * Android WebView 的 shouldInterceptRequest 对这类请求拦截不稳定（尤其 fetch+ReadableStream），
+     * 导致 v2.11 只拿到封面、拿不到 m3u8。
+     *
+     * v2.12 方案：双重获取——
+     *  1) shouldInterceptRequest 仍监听 .m3u8/.mp4（部分机型能拦到，作为补充）
+     *  2) onPageFinished 后用 evaluateJavascript 读 performance.getEntriesByType('resource')
+     *     已请求的 m3u8 URL（页面加载 1.5s 就自动请求 m3u8，performance API 记录了 URL）
+     *     —— 这是主路径，绕过 shouldInterceptRequest 的拦截限制
+     *
+     * feed 页是 Next.js SPA，m3u8 要等 JS 执行 + getVideoPlayInfos 返回后才请求（约 1.5s）。
+     */
+    suspend fun fetchVideoFromFeedPage(
+        ctx: Context,
+        feedId: String,
+        postId: String = ""
+    ): List<MediaItem> = withContext(Dispatchers.Main) {
+        val url = "https://yuba.douyu.com/feed/$feedId"
+        val interceptedUrls = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        DebugLog.d(TAG, "🎬 fetchVideoFromFeedPage：url=$url")
+
+        val result = CompletableDeferred<String>()
+        val wv = createWebView(ctx)
+        val main = Handler(Looper.getMainLooper())
+        var finished = false
+
+        // 25 秒兜底（必须先声明，finishRunnable 引用它）
+        val timeout = Runnable {
+            if (!finished) {
+                finished = true
+                DebugLog.w(TAG, "   ⏰ feed页 25s 兜底超时，网络拦截=${interceptedUrls.size}个")
+                wv.evaluateJavascript(FEED_PERF_JS) { s ->
+                    val perfUrls = parseVideoUrlsFromJs(jsonStripQuote(s))
+                    interceptedUrls.addAll(perfUrls)
+                    DebugLog.d(TAG, "   兜底读 performance=${perfUrls.size}个，最终=${interceptedUrls.size}个")
+                    result.complete("done")
+                    wv.destroySafely()
+                }
+            }
+        }
+
+        // 收尾：用 evaluateJavascript 从 performance entries 读 m3u8（主路径）+ 合并网络拦截
+        val finishRunnable = Runnable {
+            if (finished) return@Runnable
+            finished = true
+            main.removeCallbacks(timeout)
+            DebugLog.d(TAG, "   ⏱️ feed页 onPageFinished 后读 performance，网络拦截=${interceptedUrls.size}个")
+            wv.evaluateJavascript(FEED_PERF_JS) { s ->
+                val perfUrls = parseVideoUrlsFromJs(jsonStripQuote(s))
+                DebugLog.d(TAG, "   performance读到视频URL=${perfUrls.size}个：${perfUrls.joinToString { DebugLog.truncate(it, 90) }}")
+                interceptedUrls.addAll(perfUrls)
+                DebugLog.d(TAG, "   ✅ feed页最终视频URL=${interceptedUrls.size}个：${interceptedUrls.joinToString { "\n     - " + DebugLog.truncate(it, 100) }}")
+                result.complete("done")
+                wv.destroySafely()
+            }
+        }
+
+        wv.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView?, request: WebResourceRequest?
+            ): android.webkit.WebResourceResponse? {
+                val u = request?.url?.toString() ?: return null
+                val lower = u.lowercase()
+                if (lower.contains(".m3u8") || lower.contains(".mp4") ||
+                    lower.contains(".flv") || lower.contains(".m4v")) {
+                    DebugLog.d(TAG, "   🎯 feed页拦截视频URL：${u.take(120)}")
+                    interceptedUrls.add(u)
+                }
+                return null
+            }
+
+            override fun onPageFinished(view: WebView?, u: String?) {
+                DebugLog.d(TAG, "   ✅ feed页 onPageFinished：$u，已拦截=${interceptedUrls.size}个")
+                if (finished) return
+                main.removeCallbacks(finishRunnable)
+                // feed 页 SPA + getVideoPlayInfos 约 1.5s 出 m3u8，等 6s 留余量
+                main.postDelayed(finishRunnable, 6000L)
+            }
+
+            override fun onReceivedError(
+                view: WebView?, req: WebResourceRequest?, err: WebResourceError?
+            ) {
+                DebugLog.w(TAG, "   ⚠️ feed页资源错误：url=${req?.url?.toString()?.take(80)}, err=${err?.description}")
+            }
+        }
+        wv.webChromeClient = WebChromeClient()
+
+        main.postDelayed(timeout, 25000L)
+        wv.loadUrl(url)
+        DebugLog.d(TAG, "   🚀 feed页已 loadUrl，25s 兜底")
+
+        try {
+            withTimeout(30000L) { result.await() }
+        } catch (t: Throwable) {
+            DebugLog.e(TAG, "   ❌ feed页 withTimeout 异常：${t.message}", t)
+            ""
+        }.also {
+            main.removeCallbacks(timeout)
+            main.removeCallbacks(finishRunnable)
+            wv.destroySafely()
+        }
+
+        val finalUrls = synchronized(interceptedUrls) { interceptedUrls.toList() }
+        DebugLog.d(TAG, "   feed页返回视频URL=${finalUrls.size}个")
+        finalUrls.map { vurl -> MediaItem(MediaType.VIDEO, vurl, postId = postId) }
+    }
+
+    /** feed 页 evaluateJavascript 脚本：从 performance entries + video 标签读 m3u8/mp4 URL */
+    private val FEED_PERF_JS: String = """
+(function(){
+  var urls = [];
+  try {
+    performance.getEntriesByType('resource').forEach(function(e){
+      if(e.name && /\.m3u8|\.mp4|\.flv|\.m4v/i.test(e.name)) urls.push(e.name);
+    });
+  } catch(e){}
+  try {
+    document.querySelectorAll('video, source').forEach(function(v){
+      var s = v.src || v.currentSrc || '';
+      if(s && /\.m3u8|\.mp4|\.flv|\.m4v/i.test(s)) urls.push(s);
+    });
+  } catch(e){}
+  var seen={}, out=[];
+  urls.forEach(function(u){ if(!seen[u] && u.indexOf('http')===0){seen[u]=1; out.push(u);} });
+  return JSON.stringify(out);
+})();
+""".trimIndent()
+
+    /** 解析 evaluateJavascript 返回的视频 URL 数组 */
+    private fun parseVideoUrlsFromJs(s: String): List<String> {
+        if (s.isBlank()) return emptyList()
+        return runCatching {
+            JSONArray(s).let { arr ->
+                (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+            }
+        }.getOrElse {
+            DebugLog.w(TAG, "   parseVideoUrlsFromJs 解析失败：${it.message}, raw=${DebugLog.truncate(s, 200)}")
+            emptyList()
+        }
+    }
+
     // ------------------------------------------------------------------
     //  内部：加载页面并跑一段 JS，用 CompletableDeferred 把回调 API 变成挂起函数
     // ------------------------------------------------------------------
