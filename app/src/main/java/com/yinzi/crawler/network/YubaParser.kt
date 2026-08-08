@@ -265,6 +265,10 @@ object YubaParser {
                         val vs = videoEl.toStr()
                         if (vs.isNotEmpty() && isVideoUrl(vs)) {
                             media += MediaItem(MediaType.VIDEO, url = vs, postId = postId)
+                        } else if (vs.isNotEmpty()) {
+                            // video=true（布尔值）等非直链情况，创建占位让后续走WebView补全
+                            media += MediaItem(MediaType.VIDEO, url = "", postId = postId, needsDetail = true)
+                            DebugLog.d(TAG, "     video=$vs(非直链)，插入占位(needsDetail=true)")
                         }
                     }
                     else -> {}
@@ -437,6 +441,17 @@ object YubaParser {
         }
         DebugLog.d(TAG, "     extractVideoPlayUrl：regex匹配次数=${regex.findAll(content).count()}，结果=$result")
         return result
+    }
+
+    /** 从详情 content 里提取所有 data-playurl（多视频帖可能有多个） */
+    fun extractAllVideoPlayUrls(content: String): List<String> {
+        if (content.isEmpty()) return emptyList()
+        val regex = Regex("""data-playurl\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        val urls = regex.findAll(content).mapNotNull { m ->
+            m.groupValues.getOrNull(1)?.trim()?.let { if (it.startsWith("http")) it else null }
+        }.distinct().toList()
+        DebugLog.d(TAG, "     extractAllVideoPlayUrls：匹配${regex.findAll(content).count()}次，去重后=${urls.size}个")
+        return urls
     }
 
     private fun isImageUrl(s: String): Boolean {

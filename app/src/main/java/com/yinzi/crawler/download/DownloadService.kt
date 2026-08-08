@@ -31,40 +31,53 @@ class DownloadService : LifecycleService() {
 
         startForeground(NOTIF_ID, buildNotification(0, urls.size, 0))
         lifecycleScope.launch {
-            var done = 0
-            var failed = 0
+            // 先把需要补全直链的视频占位项展开为实际视频URL列表
+            // 一个帖子可能有多个视频，全部加入下载队列
+            val downloadItems = mutableListOf<Pair<String, Boolean>>() // (url, isVideo)
             for ((i, u) in urls.withIndex()) {
                 val isVideo = types.getOrNull(i) == TYPE_VIDEO
-                var url = u
-
-                // 视频 placeholder：url 为空，需要先通过详情接口补全直链
-                if (isVideo && url.isBlank()) {
+                if (isVideo && u.isBlank()) {
+                    // 视频 placeholder：url 为空，需要先通过详情接口补全所有视频直链
                     val postId = postIds.getOrNull(i).orEmpty()
                     if (postId.isNotBlank()) {
-                        val resolved = withContext(Dispatchers.IO) {
+                        val resolvedUrls = withContext(Dispatchers.IO) {
                             runCatching {
                                 val mediaList = YubaRepository.fetchPostMedia(postId)
-                                mediaList.firstOrNull { it.isVideo && it.url.isNotBlank() }?.url
-                            }.getOrNull()
+                                mediaList.filter { it.isVideo && it.url.isNotBlank() }.map { it.url }
+                            }.getOrDefault(emptyList())
                         }
-                        if (!resolved.isNullOrBlank()) {
-                            url = resolved
+                        if (resolvedUrls.isNotEmpty()) {
+                            for (vurl in resolvedUrls) {
+                                downloadItems.add(vurl to true)
+                            }
+                        } else {
+                            // 补全失败，记录一个空项让 failed++
+                            downloadItems.add("" to true)
                         }
+                    } else {
+                        downloadItems.add("" to true)
                     }
-                    if (url.isBlank()) {
-                        // 还是拿不到直链，跳过
-                        failed++
-                        done++
-                        notifyProgress(done, urls.size, failed)
-                        continue
-                    }
+                } else {
+                    downloadItems.add(u to isVideo)
                 }
+            }
 
+            // 更新总数（多视频展开后数量可能变多）
+            val total = downloadItems.size
+            var done = 0
+            var failed = 0
+            for ((url, isVideo) in downloadItems) {
+                if (url.isBlank()) {
+                    failed++
+                    done++
+                    notifyProgress(done, total, failed)
+                    continue
+                }
                 val item = MediaItem(if (isVideo) MediaType.VIDEO else MediaType.IMAGE, url)
                 val result = DownloadManager.download(item)
                 done++
                 if (result is DownloadResult.Failure) failed++
-                notifyProgress(done, urls.size, failed)
+                notifyProgress(done, total, failed)
             }
             // 完成通知
             val nm = getSystemService(NotificationManager::class.java)

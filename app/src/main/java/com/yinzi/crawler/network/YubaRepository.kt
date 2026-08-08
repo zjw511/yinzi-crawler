@@ -179,8 +179,8 @@ object YubaRepository {
             return@withContext fromApi
         }
 
-        // 2) 从 content 里提取 data-playurl（斗鱼视频分享页链接）
-        val playUrl = raw?.let { jsonStr ->
+        // 2) 从 content 里提取所有 data-playurl（多视频帖可能有多个）
+        val playUrls = raw?.let { jsonStr ->
             runCatching {
                 val content = kotlinx.serialization.json.Json.parseToJsonElement(jsonStr)
                     .let { (it as? kotlinx.serialization.json.JsonObject) }
@@ -188,32 +188,38 @@ object YubaRepository {
                 val c = dataObj?.get("content")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
                     ?: dataObj?.get("describe")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
                     ?: ""
-                val extracted = YubaParser.extractVideoPlayUrl(c)
-                DebugLog.d(TAG, "     content长度=${c.length}，含data-playurl=${c.contains("data-playurl", true)}，提取结果=$extracted")
+                val extracted = YubaParser.extractAllVideoPlayUrls(c)
+                DebugLog.d(TAG, "     content长度=${c.length}，含data-playurl=${c.contains("data-playurl", true)}，提取到${extracted.size}个分享页链接")
                 extracted
             }.getOrElse { t ->
                 DebugLog.w(TAG, "     提取 data-playurl 异常：${t.message}")
-                null
-            }
-        }
-
-        // 3) 有 data-playurl → 加载视频分享页拦截 m3u8
-        if (!playUrl.isNullOrBlank()) {
-            DebugLog.i(TAG, "   🎬 发现data-playurl=$playUrl，WebView加载分享页拦截m3u8")
-            val videoMedia = runCatching {
-                withContext(Dispatchers.Main.immediate) {
-                    WebViewFetcher.fetchVideoFromSharePage(appCtx, playUrl, postId)
-                }
-            }.getOrElse { t ->
-                DebugLog.e(TAG, "   ❌ 拦截m3u8异常：${t.message}", t)
                 emptyList()
             }
-            DebugLog.d(TAG, "     拦截到视频=${videoMedia.size}个：${videoMedia.joinToString { "🎥" + DebugLog.truncate(it.url, 80) }}")
-            if (videoMedia.isNotEmpty()) {
-                // 合并：API 图片 + WebView 视频
+        } ?: emptyList()
+
+        // 3) 有 data-playurl → 逐个加载视频分享页拦截 m3u8（支持多视频）
+        if (playUrls.isNotEmpty()) {
+            DebugLog.i(TAG, "   🎬 发现${playUrls.size}个data-playurl，逐个WebView加载分享页拦截m3u8")
+            val allVideoMedia = mutableListOf<MediaItem>()
+            for ((idx, playUrl) in playUrls.withIndex()) {
+                if (playUrl.isBlank()) continue
+                DebugLog.d(TAG, "   🎬 [$idx/${playUrls.size}] 加载分享页：$playUrl")
+                val videoMedia = runCatching {
+                    withContext(Dispatchers.Main.immediate) {
+                        WebViewFetcher.fetchVideoFromSharePage(appCtx, playUrl, postId)
+                    }
+                }.getOrElse { t ->
+                    DebugLog.e(TAG, "   ❌ 拦截m3u8异常[$idx]：${t.message}", t)
+                    emptyList()
+                }
+                DebugLog.d(TAG, "     [$idx] 拦截到视频=${videoMedia.size}个：${videoMedia.joinToString { "🎥" + DebugLog.truncate(it.url, 80) }}")
+                allVideoMedia.addAll(videoMedia)
+            }
+            if (allVideoMedia.isNotEmpty()) {
+                // 合并：API 图片 + WebView 视频（去重）
                 val urls = fromApi.map { it.url }.toMutableSet()
                 val merged = fromApi.toMutableList()
-                for (m in videoMedia) {
+                for (m in allVideoMedia) {
                     if (m.url.isNotBlank() && urls.add(m.url)) merged.add(m)
                 }
                 DebugLog.d(TAG, "     ✅ 合并后共 ${merged.size} 个媒体(图片+视频)，返回")
@@ -222,14 +228,14 @@ object YubaRepository {
                 DebugLog.w(TAG, "     ⚠️ 分享页也没拦截到 m3u8，继续走下一条路")
             }
         } else {
-            DebugLog.d(TAG, "     没有 data-playurl，跳过分页拦截")
+            DebugLog.d(TAG, "     没有 data-playurl，跳过分享页拦截")
         }
 
         // 4) 兜底：走 PC 版帖子页 WebView（可能能抓到 demand-video）
         // 优化：没有 data-playurl 时，只有当详情 API 里存在"待补全视频项"才跑 WebView。
         //      图片帖（有图）和纯文字帖（无图无视频）都不加载 WebView，省 15-30 秒。
         val hasPendingVideo = fromApi.any { it.isVideo && it.url.isBlank() }
-        if (playUrl.isNullOrBlank() && !hasPendingVideo) {
+        if (playUrls.isEmpty() && !hasPendingVideo) {
             val why = if (fromApi.isNotEmpty()) "图片帖(${fromApi.size}图)" else "纯文字帖(0媒体)"
             DebugLog.d(TAG, "     ✅ $why 且无data-playurl，跳过WebView兜底")
             return@withContext fromApi

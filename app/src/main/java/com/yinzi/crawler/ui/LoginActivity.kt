@@ -45,8 +45,9 @@ class LoginActivity : AppCompatActivity() {
             allowContentAccess = true
             @Suppress("DEPRECATION")
             allowFileAccess = true
-            userAgentString = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
+            // 用桌面版 UA：移动端 UA 会被斗鱼重定向到手机版页面（提示"打开app"无法登录）
+            userAgentString = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
         }
 
         CookieManager.getInstance().apply {
